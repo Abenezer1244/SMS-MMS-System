@@ -2124,17 +2124,39 @@ app.post('/setup', async (req, res) => {
     try {
         logger.info('🔧 Manual database setup/recovery initiated...');
         
-        // Re-initialize database
-        await smsSystem.initializeDatabase();
+        // Force close any existing database connections
+        const fs = require('fs');
+        const dbPath = 'production_church.db';
+        
+        // Create new database with force flag
+        const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
+            if (err) {
+                logger.error('Database creation error:', err);
+            } else {
+                logger.info('Database file created/opened successfully');
+            }
+        });
+        
+        // Set pragmas for better concurrency
+        await smsSystem.runAsync(db, 'PRAGMA busy_timeout=30000');
+        await smsSystem.runAsync(db, 'PRAGMA journal_mode=WAL');
+        await smsSystem.runAsync(db, 'PRAGMA synchronous=NORMAL');
+        
+        // Create all tables
+        await smsSystem.createTables(db);
+        await smsSystem.createIndexes(db);
+        await smsSystem.initializeGroups(db);
+        
+        db.close();
         
         // Setup congregation
         await setupProductionCongregation();
         
         // Verify setup
-        const db = new sqlite3.Database('production_church.db');
-        const memberCount = await smsSystem.getAsync(db, "SELECT COUNT(*) as count FROM members WHERE active = 1");
-        const groupCount = await smsSystem.getAsync(db, "SELECT COUNT(*) as count FROM groups");
-        db.close();
+        const verifyDb = new sqlite3.Database('production_church.db');
+        const memberCount = await smsSystem.getAsync(verifyDb, "SELECT COUNT(*) as count FROM members WHERE active = 1");
+        const groupCount = await smsSystem.getAsync(verifyDb, "SELECT COUNT(*) as count FROM groups");
+        verifyDb.close();
         
         logger.info('✅ Manual setup completed successfully');
         
@@ -2160,6 +2182,71 @@ app.post('/setup', async (req, res) => {
             error: error.message,
             timestamp: new Date().toISOString(),
             suggestion: "Check logs for detailed error information"
+        });
+    }
+});
+
+// Add database reset endpoint for emergencies
+app.post('/reset-database', async (req, res) => {
+    try {
+        logger.warn('🚨 EMERGENCY: Database reset initiated...');
+        
+        const fs = require('fs');
+        const dbPath = 'production_church.db';
+        
+        // Remove existing database files
+        try {
+            if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+            if (fs.existsSync(dbPath + '-shm')) fs.unlinkSync(dbPath + '-shm');
+            if (fs.existsSync(dbPath + '-wal')) fs.unlinkSync(dbPath + '-wal');
+            logger.info('🗑️ Old database files removed');
+        } catch (removeError) {
+            logger.warn('Warning removing old files:', removeError.message);
+        }
+        
+        // Create fresh database
+        const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE);
+        
+        // Set pragmas
+        await smsSystem.runAsync(db, 'PRAGMA journal_mode=WAL');
+        await smsSystem.runAsync(db, 'PRAGMA synchronous=NORMAL');
+        await smsSystem.runAsync(db, 'PRAGMA busy_timeout=30000');
+        
+        // Create all tables
+        await smsSystem.createTables(db);
+        await smsSystem.createIndexes(db);
+        await smsSystem.initializeGroups(db);
+        
+        db.close();
+        
+        // Setup congregation
+        await setupProductionCongregation();
+        
+        // Verify
+        const verifyDb = new sqlite3.Database(dbPath);
+        const memberCount = await smsSystem.getAsync(verifyDb, "SELECT COUNT(*) as count FROM members WHERE active = 1");
+        const groupCount = await smsSystem.getAsync(verifyDb, "SELECT COUNT(*) as count FROM groups");
+        verifyDb.close();
+        
+        logger.info('✅ Database reset and setup completed');
+        
+        res.json({
+            status: "✅ Database reset and setup completed",
+            timestamp: new Date().toISOString(),
+            results: {
+                groups_created: groupCount.count,
+                members_added: memberCount.count,
+                database_freshly_created: true
+            },
+            warning: "All previous data was deleted and recreated"
+        });
+        
+    } catch (error) {
+        logger.error(`❌ Database reset failed: ${error.message}`);
+        res.status(500).json({
+            status: "❌ Reset failed",
+            error: error.message,
+            timestamp: new Date().toISOString()
         });
     }
 });
