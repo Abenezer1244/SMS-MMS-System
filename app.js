@@ -2119,8 +2119,8 @@ app.get('/debug', async (req, res) => {
     }
 });
 
-// Add database setup/recovery endpoint
-app.post('/setup', async (req, res) => {
+// Add database setup/recovery endpoint (supports both GET and POST)
+app.all('/setup', async (req, res) => {
     try {
         logger.info('🔧 Manual database setup/recovery initiated...');
         
@@ -2160,7 +2160,7 @@ app.post('/setup', async (req, res) => {
         
         logger.info('✅ Manual setup completed successfully');
         
-        res.json({
+        const result = {
             status: "✅ Database setup completed",
             timestamp: new Date().toISOString(),
             results: {
@@ -2173,16 +2173,61 @@ app.post('/setup', async (req, res) => {
                 "Check /debug endpoint to verify members",
                 "Monitor logs for message processing"
             ]
-        });
+        };
+        
+        // Return JSON for API calls, HTML for browser
+        if (req.headers.accept && req.headers.accept.includes('text/html')) {
+            res.send(`
+                <html>
+                <head><title>Church SMS Setup</title></head>
+                <body style="font-family: Arial; padding: 20px;">
+                    <h1>✅ Database Setup Completed!</h1>
+                    <h2>Results:</h2>
+                    <ul>
+                        <li>Groups created: ${groupCount.count}</li>
+                        <li>Members added: ${memberCount.count}</li>
+                        <li>Database initialized: ✅</li>
+                    </ul>
+                    <h2>Next Steps:</h2>
+                    <ol>
+                        <li>Test sending a message to your church number</li>
+                        <li><a href="/debug">Check debug endpoint</a> to verify members</li>
+                        <li>Monitor logs for message processing</li>
+                    </ol>
+                    <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>
+                    <p><a href="/health">System Health</a> | <a href="/debug">Debug Info</a> | <a href="/">Home</a></p>
+                </body>
+                </html>
+            `);
+        } else {
+            res.json(result);
+        }
         
     } catch (error) {
         logger.error(`❌ Manual setup failed: ${error.message}`);
-        res.status(500).json({
+        
+        const errorResult = {
             status: "❌ Setup failed",
             error: error.message,
             timestamp: new Date().toISOString(),
             suggestion: "Check logs for detailed error information"
-        });
+        };
+        
+        if (req.headers.accept && req.headers.accept.includes('text/html')) {
+            res.status(500).send(`
+                <html>
+                <head><title>Setup Failed</title></head>
+                <body style="font-family: Arial; padding: 20px;">
+                    <h1>❌ Setup Failed</h1>
+                    <p><strong>Error:</strong> ${error.message}</p>
+                    <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>
+                    <p><a href="/reset-database">Try Database Reset</a> | <a href="/health">System Health</a></p>
+                </body>
+                </html>
+            `);
+        } else {
+            res.status(500).json(errorResult);
+        }
     }
 });
 
