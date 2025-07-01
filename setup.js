@@ -291,6 +291,9 @@ class DatabaseSetup {
             `, ["+14257729189", "Church Admin", true]);
 
             const adminResult = await this.getAsync(db, "SELECT id FROM members WHERE phone_number = ?", ["+14257729189"]);
+            if (!adminResult) {
+                throw new Error("Failed to create admin user");
+            }
             const adminId = adminResult.id;
 
             // Add to admin group
@@ -316,6 +319,10 @@ class DatabaseSetup {
                 `, [cleanPhone, name, false]);
 
                 const memberResult = await this.getAsync(db, "SELECT id FROM members WHERE phone_number = ?", [cleanPhone]);
+                if (!memberResult) {
+                    console.warn(`⚠️ Failed to create member: ${name}`);
+                    continue;
+                }
                 const memberId = memberResult.id;
 
                 await this.runAsync(db, `
@@ -333,18 +340,19 @@ class DatabaseSetup {
     }
 
     async addCustomMembers() {
-        console.log('📋 Step 3: Custom member addition (optional)...');
+        console.log('📋 Step 3: Custom member addition...');
         
-        // You can add your custom members here
+        // Configure your congregation members here
         const customMembers = [
             // Add your congregation members in this format:
-            // ["+1234567890", "Member Name", 1], // Group 1 = Main congregation
-            // ["+1234567891", "Another Member", 2], // Group 2 = Leadership
-            // ["+1234567892", "Media Member", 3], // Group 3 = Media team
+            // ["+15551234567", "John Smith", 1],      // Group 1 = Main congregation
+            // ["+15551234568", "Jane Pastor", 2],     // Group 2 = Leadership
+            // ["+15551234569", "Tech Person", 3],     // Group 3 = Media team
         ];
 
         if (customMembers.length === 0) {
-            console.log('ℹ️ No custom members to add. Edit setup.js to add your congregation.');
+            console.log('ℹ️ No custom members configured. Edit setup.js to add your congregation.');
+            console.log('💡 Add members to the customMembers array above this message.');
             return;
         }
 
@@ -360,6 +368,10 @@ class DatabaseSetup {
                 `, [cleanPhone, name, false]);
 
                 const memberResult = await this.getAsync(db, "SELECT id FROM members WHERE phone_number = ?", [cleanPhone]);
+                if (!memberResult) {
+                    console.warn(`⚠️ Failed to create custom member: ${name}`);
+                    continue;
+                }
                 const memberId = memberResult.id;
 
                 await this.runAsync(db, `
@@ -369,6 +381,8 @@ class DatabaseSetup {
 
                 console.log(`✅ Added custom member: ${name} (${cleanPhone}) to group ${groupId}`);
             }
+
+            console.log(`✅ Added ${customMembers.length} custom members`);
         } finally {
             db.close();
         }
@@ -405,6 +419,11 @@ class DatabaseSetup {
                 console.log(`   • ${member.name} ${role} - ${member.phone_number} - ${member.group_name}`);
             }
 
+            if (memberCount.count === 0) {
+                console.warn('⚠️ No members found! The system requires at least one member to function.');
+                console.log('💡 Edit the customMembers array in setup.js to add your congregation.');
+            }
+
             console.log('\n✅ Database setup verification completed');
         } finally {
             db.close();
@@ -412,7 +431,7 @@ class DatabaseSetup {
     }
 
     async checkEnvironment() {
-        console.log('📋 Step 5: Environment check...');
+        console.log('📋 Step 5: Environment validation...');
         
         const requiredEnvVars = [
             'TWILIO_ACCOUNT_SID',
@@ -425,75 +444,151 @@ class DatabaseSetup {
         ];
 
         const missing = [];
-        const placeholders = [];
+        const invalid = [];
 
         for (const envVar of requiredEnvVars) {
             const value = process.env[envVar];
             if (!value) {
                 missing.push(envVar);
-            } else if (value.includes('your_') || value.includes('_here')) {
-                placeholders.push(envVar);
+            } else if (value.includes('your_') || value.includes('_here') || value === 'not_configured') {
+                invalid.push(envVar);
             }
         }
 
         if (missing.length > 0) {
-            console.log('❌ Missing environment variables:');
+            console.log('❌ Missing required environment variables:');
             for (const envVar of missing) {
                 console.log(`   • ${envVar}`);
             }
         }
 
-        if (placeholders.length > 0) {
-            console.log('⚠️ Environment variables with placeholder values:');
-            for (const envVar of placeholders) {
+        if (invalid.length > 0) {
+            console.log('❌ Environment variables with invalid/placeholder values:');
+            for (const envVar of invalid) {
                 console.log(`   • ${envVar}: ${process.env[envVar]}`);
             }
         }
 
-        if (missing.length === 0 && placeholders.length === 0) {
+        // Validate specific formats
+        if (process.env.TWILIO_ACCOUNT_SID && !process.env.TWILIO_ACCOUNT_SID.startsWith('AC')) {
+            invalid.push('TWILIO_ACCOUNT_SID (must start with AC)');
+        }
+
+        if (process.env.R2_ENDPOINT_URL && !process.env.R2_ENDPOINT_URL.startsWith('https://')) {
+            invalid.push('R2_ENDPOINT_URL (must start with https://)');
+        }
+
+        if (missing.length === 0 && invalid.length === 0) {
             console.log('✅ All environment variables are properly configured');
+            console.log('✅ System ready for production deployment');
         } else {
-            console.log('\n💡 Next steps:');
-            console.log('   1. Copy .env.example to .env');
-            console.log('   2. Fill in your actual Twilio and Cloudflare R2 credentials');
-            console.log('   3. Set DEVELOPMENT_MODE=false for production');
-            console.log('   4. Restart the application');
+            console.log('\n❌ ENVIRONMENT CONFIGURATION REQUIRED');
+            console.log('');
+            console.log('💡 Required actions:');
+            console.log('   1. Create .env file with proper credentials');
+            console.log('   2. Set all required environment variables');
+            console.log('   3. Ensure values are not placeholders');
+            console.log('   4. Restart the application after configuration');
+            console.log('');
+            console.log('📝 Example .env file:');
+            console.log('   TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+            console.log('   TWILIO_AUTH_TOKEN=your_auth_token_from_twilio');
+            console.log('   TWILIO_PHONE_NUMBER=+1234567890');
+            console.log('   R2_ACCESS_KEY_ID=your_cloudflare_r2_access_key');
+            console.log('   R2_SECRET_ACCESS_KEY=your_cloudflare_r2_secret_key');
+            console.log('   R2_ENDPOINT_URL=https://account.r2.cloudflarestorage.com');
+            console.log('   R2_BUCKET_NAME=your-church-media-bucket');
+            console.log('   R2_PUBLIC_URL=https://media.yourchurch.org');
+            
+            console.log('\n🚨 PRODUCTION DEPLOYMENT WILL FAIL WITHOUT PROPER CONFIGURATION');
+        }
+    }
+
+    async validateDatabaseIntegrity() {
+        console.log('📋 Step 6: Database integrity check...');
+        
+        const db = new sqlite3.Database(this.dbPath);
+        
+        try {
+            // Check database integrity
+            const integrityResult = await this.getAsync(db, "PRAGMA integrity_check");
+            if (integrityResult.integrity_check !== 'ok') {
+                throw new Error(`Database integrity check failed: ${integrityResult.integrity_check}`);
+            }
+
+            // Verify foreign key constraints
+            const fkResult = await this.getAsync(db, "PRAGMA foreign_key_check");
+            if (fkResult) {
+                throw new Error('Foreign key constraint violations detected');
+            }
+
+            // Check that essential tables exist
+            const tables = await this.allAsync(db, "SELECT name FROM sqlite_master WHERE type='table'");
+            const tableNames = tables.map(t => t.name);
+            
+            const requiredTables = [
+                'groups', 'members', 'group_members', 'broadcast_messages',
+                'message_reactions', 'media_files', 'delivery_log'
+            ];
+
+            const missingTables = requiredTables.filter(table => !tableNames.includes(table));
+            if (missingTables.length > 0) {
+                throw new Error(`Missing required tables: ${missingTables.join(', ')}`);
+            }
+
+            console.log('✅ Database integrity verified');
+            console.log(`📊 Database contains ${tableNames.length} tables`);
+            
+        } finally {
+            db.close();
         }
     }
 
     async run() {
         try {
-            console.log('🚀 Starting database setup...\n');
+            console.log('🚀 Starting production database setup...\n');
             
             await this.setupDatabase();
             await this.setupProductionCongregation();
             await this.addCustomMembers();
             await this.verifySetup();
+            await this.validateDatabaseIntegrity();
             await this.checkEnvironment();
             
-            console.log('\n🎉 Setup completed successfully!');
-            console.log('\n📝 Next steps:');
-            console.log('   1. Configure your environment variables in .env');
-            console.log('   2. Deploy to your hosting platform (Render.com recommended)');
-            console.log('   3. Set up your Twilio webhook URL');
-            console.log('   4. Test with a message to your church number');
-            console.log('\n💚 Your church SMS system is ready to serve your congregation!');
+            console.log('\n🎉 Production setup completed successfully!');
+            console.log('\n📝 Next steps for production deployment:');
+            console.log('   1. ✅ Configure environment variables (.env file)');
+            console.log('   2. ✅ Deploy to hosting platform (Render.com recommended)');
+            console.log('   3. ✅ Configure Twilio webhook URL');
+            console.log('   4. ✅ Set up A2P 10DLC registration with Twilio');
+            console.log('   5. ✅ Configure Cloudflare R2 bucket and domain');
+            console.log('   6. ✅ Send first message to church number');
+            console.log('\n💚 Your production church SMS system is ready to serve!');
+            console.log('🏛️ Professional church communication platform');
+            console.log('🔇 Smart reaction tracking with silent processing');
+            console.log('🧹 Clean media display with professional presentation');
+            console.log('🛡️ Secure registration-only member access');
             
         } catch (error) {
-            console.error('❌ Setup failed:', error.message);
-            console.error(error.stack);
+            console.error('\n❌ Production setup failed:', error.message);
+            console.error('Stack trace:', error.stack);
+            console.log('\n🔧 Troubleshooting:');
+            console.log('   • Ensure database file permissions are correct');
+            console.log('   • Check that SQLite3 is properly installed');
+            console.log('   • Verify no other processes are using the database');
+            console.log('   • Run setup with elevated permissions if needed');
             process.exit(1);
         }
     }
 }
 
-// Check if .env file exists
+// Production environment check
 if (!fs.existsSync('.env')) {
-    console.log('⚠️ No .env file found. Please copy .env.example to .env and configure your credentials.');
-    console.log('   cp .env.example .env');
-    console.log('   # Then edit .env with your actual values\n');
+    console.log('⚠️ No .env file found.');
+    console.log('💡 Create .env file with your production credentials before deployment.');
+    console.log('📋 Required environment variables will be validated during setup.\n');
 }
 
-// Run setup
+// Run production setup
 const setup = new DatabaseSetup();
 setup.run();

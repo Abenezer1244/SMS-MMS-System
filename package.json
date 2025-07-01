@@ -1,12 +1,12 @@
 {
-  "name": "yesuway-church-sms-enterprise",
+  "name": "yesuway-church-sms-production",
   "version": "3.0.0",
-  "description": "Enterprise-grade Church SMS Broadcasting System with Smart Reaction Tracking",
+  "description": "Production Church SMS Broadcasting System with Smart Reaction Tracking",
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "production": "NODE_ENV=production node app.js",
-    "setup": "node setup.js"
+    "setup": "node setup.js",
+    "health": "curl -s http://localhost:5000/health || curl -s https://your-app.onrender.com/health"
   },
   "engines": {
     "node": ">=18.0.0",
@@ -31,7 +31,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-organization/yesuway-church-sms-enterprise.git"
+    "url": "https://github.com/your-organization/yesuway-church-sms-production.git"
   },
   "keywords": [
     "church",
@@ -40,15 +40,15 @@
     "twilio",
     "communication",
     "congregation",
-    "enterprise",
     "production",
     "smart-reactions",
-    "media-processing"
+    "media-processing",
+    "enterprise"
   ],
   "author": "YesuWay Church Technology Team",
-  "license": "Church-Use-Enterprise",
+  "license": "MIT",
   "bugs": {
-    "url": "https://github.com/your-organization/yesuway-church-sms-enterprise/issues"
+    "url": "https://github.com/your-organization/yesuway-church-sms-production/issues"
   },
-  "homepage": "https://github.com/your-organization/yesuway-church-sms-enterprise#readme"
+  "homepage": "https://github.com/your-organization/yesuway-church-sms-production#readme"
 }
