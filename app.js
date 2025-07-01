@@ -255,27 +255,61 @@ class ProductionChurchSMS {
     }
 
     async initializeDatabase() {
-        try {
-            const db = new sqlite3.Database('production_church.db');
-            
-            // Enable WAL mode and optimizations
-            await this.runAsync(db, 'PRAGMA journal_mode=WAL');
-            await this.runAsync(db, 'PRAGMA synchronous=NORMAL');
-            await this.runAsync(db, 'PRAGMA cache_size=10000');
-            await this.runAsync(db, 'PRAGMA temp_store=memory');
-            await this.runAsync(db, 'PRAGMA foreign_keys=ON');
+        const maxRetries = 5;
+        let retryCount = 0;
+        
+        while (retryCount < maxRetries) {
+            try {
+                // Use a timeout to prevent hanging
+                const db = new sqlite3.Database('production_church.db', sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE);
+                
+                // Wait a bit if this is a retry
+                if (retryCount > 0) {
+                    await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+                    logger.info(`🔄 Database initialization retry ${retryCount}/${maxRetries}`);
+                }
+                
+                // Enable WAL mode and optimizations with timeout
+                await Promise.race([
+                    this.setupDatabase(db),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Database setup timeout')), 30000))
+                ]);
 
-            // Create tables
-            await this.createTables(db);
-            await this.createIndexes(db);
-            await this.initializeGroups(db);
-
-            db.close();
-            logger.info('✅ Production database with smart reaction tracking initialized');
-        } catch (error) {
-            logger.error(`❌ Database initialization failed: ${error.message}`);
-            throw error;
+                db.close();
+                logger.info('✅ Production database with smart reaction tracking initialized');
+                return; // Success, exit the retry loop
+                
+            } catch (error) {
+                retryCount++;
+                logger.error(`❌ Database initialization attempt ${retryCount} failed: ${error.message}`);
+                
+                if (retryCount >= maxRetries) {
+                    logger.error('❌ All database initialization attempts failed');
+                    // Don't throw error - continue with limited functionality
+                    logger.warn('⚠️ Continuing without full database initialization');
+                    logger.warn('⚠️ Some features may not work until database is properly initialized');
+                    return;
+                } else {
+                    logger.info(`🔄 Retrying in ${retryCount} seconds...`);
+                    await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+                }
+            }
         }
+    }
+
+    async setupDatabase(db) {
+        // Enable WAL mode and optimizations
+        await this.runAsync(db, 'PRAGMA journal_mode=WAL');
+        await this.runAsync(db, 'PRAGMA synchronous=NORMAL');
+        await this.runAsync(db, 'PRAGMA cache_size=10000');
+        await this.runAsync(db, 'PRAGMA temp_store=memory');
+        await this.runAsync(db, 'PRAGMA foreign_keys=ON');
+        await this.runAsync(db, 'PRAGMA busy_timeout=30000'); // 30 second timeout
+
+        // Create tables
+        await this.createTables(db);
+        await this.createIndexes(db);
+        await this.initializeGroups(db);
     }
 
     runAsync(db, sql, params = []) {
@@ -2012,6 +2046,121 @@ app.all('/test', async (req, res) => {
     } catch (error) {
         logger.error(`❌ Test endpoint error: ${error.message}`);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// Add diagnostic endpoint for debugging
+app.get('/debug', async (req, res) => {
+    try {
+        const db = new sqlite3.Database('production_church.db');
+        
+        // Get all members
+        const members = await smsSystem.allAsync(db, `
+            SELECT m.id, m.phone_number, m.name, m.is_admin, m.active,
+                   g.name as group_name
+            FROM members m
+            LEFT JOIN group_members gm ON m.id = gm.member_id
+            LEFT JOIN groups g ON gm.group_id = g.id
+            ORDER BY m.name
+        `);
+        
+        // Get recent messages
+        const recentMessages = await smsSystem.allAsync(db, `
+            SELECT id, from_phone, from_name, original_message, 
+                   delivery_status, sent_at
+            FROM broadcast_messages 
+            ORDER BY sent_at DESC 
+            LIMIT 5
+        `);
+        
+        // Get delivery stats
+        const deliveryStats = await smsSystem.allAsync(db, `
+            SELECT delivery_status, COUNT(*) as count
+            FROM delivery_log 
+            GROUP BY delivery_status
+        `);
+        
+        db.close();
+        
+        res.json({
+            timestamp: new Date().toISOString(),
+            system_status: {
+                twilio_connected: smsSystem.twilioClient !== null,
+                r2_connected: smsSystem.r2Client !== null,
+                database_ready: true
+            },
+            congregation: {
+                total_members: members.length,
+                active_members: members.filter(m => m.active).length,
+                admin_members: members.filter(m => m.is_admin).length,
+                members: members
+            },
+            recent_activity: {
+                recent_messages: recentMessages,
+                delivery_statistics: deliveryStats
+            },
+            troubleshooting: {
+                common_issues: [
+                    "Members not in database",
+                    "Phone numbers not properly formatted", 
+                    "Twilio credentials not working",
+                    "Messages being rejected as reactions"
+                ]
+            }
+        });
+        
+    } catch (error) {
+        logger.error(`❌ Debug endpoint error: ${error.message}`);
+        res.status(500).json({ 
+            error: error.message,
+            timestamp: new Date().toISOString(),
+            suggestion: "Database may not be initialized. Try /setup endpoint."
+        });
+    }
+});
+
+// Add database setup/recovery endpoint
+app.post('/setup', async (req, res) => {
+    try {
+        logger.info('🔧 Manual database setup/recovery initiated...');
+        
+        // Re-initialize database
+        await smsSystem.initializeDatabase();
+        
+        // Setup congregation
+        await setupProductionCongregation();
+        
+        // Verify setup
+        const db = new sqlite3.Database('production_church.db');
+        const memberCount = await smsSystem.getAsync(db, "SELECT COUNT(*) as count FROM members WHERE active = 1");
+        const groupCount = await smsSystem.getAsync(db, "SELECT COUNT(*) as count FROM groups");
+        db.close();
+        
+        logger.info('✅ Manual setup completed successfully');
+        
+        res.json({
+            status: "✅ Database setup completed",
+            timestamp: new Date().toISOString(),
+            results: {
+                groups_created: groupCount.count,
+                members_added: memberCount.count,
+                database_initialized: true
+            },
+            next_steps: [
+                "Test sending a message to your church number",
+                "Check /debug endpoint to verify members",
+                "Monitor logs for message processing"
+            ]
+        });
+        
+    } catch (error) {
+        logger.error(`❌ Manual setup failed: ${error.message}`);
+        res.status(500).json({
+            status: "❌ Setup failed",
+            error: error.message,
+            timestamp: new Date().toISOString(),
+            suggestion: "Check logs for detailed error information"
+        });
     }
 });
 
