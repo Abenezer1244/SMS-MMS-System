@@ -329,8 +329,8 @@ async connectToDatabase() {
         // Configure your congregation members here
         const customMembers = [
             // Add your congregation members in this format:
-            // { phone: "+15551234567", name: "John Smith", groupName: "YesuWay Congregation" },
-            // { phone: "+15551234568", name: "Jane Pastor", groupName: "Church Leadership" },
+             { phone: "+14257729189", name: "mike", groupName: "YesuWay Congregation" },
+             { phone: "+12068001141", name: "michael", groupName: "Church Leadership" },
             // { phone: "+15551234569", name: "Tech Person", groupName: "Media Team" },
         ];
 
