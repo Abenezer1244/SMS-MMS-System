@@ -19,81 +19,55 @@ class MongoDBManager {
         this.maxRetries = 5;
     }
 
-    // PRODUCTION FIXES FOR database.js
-// Replace your connect method in MongoDBManager class with this corrected version:
+    // 🔥 FIXED: MongoDB Connection with correct options - No deprecated options
+    async connect(connectionString, options = {}) {
+        // FIXED: Only use supported MongoDB options
+        const defaultOptions = {
+            maxPoolSize: 10,
+            serverSelectionTimeoutMS: 5000,
+            socketTimeoutMS: 45000,
+            connectTimeoutMS: 10000,
+            retryWrites: true,
+            retryReads: true
+            // REMOVED these deprecated options that cause "bufferMaxEntries is not supported":
+            // bufferCommands: false,     ❌ DEPRECATED
+            // bufferMaxEntries: 0,       ❌ DEPRECATED AND CAUSES ERROR
+            // useNewUrlParser: true,     ❌ DEPRECATED
+            // useUnifiedTopology: true   ❌ DEPRECATED
+        };
 
-// IMMEDIATE FIX for database.js
-// Replace the connect method in your MongoDBManager class
+        const finalOptions = { ...defaultOptions, ...options };
 
-async connect(connectionString, options = {}) {
-    // FIXED: Only use supported MongoDB options
-    const defaultOptions = {
-        maxPoolSize: 10,
-        serverSelectionTimeoutMS: 5000,
-        socketTimeoutMS: 45000,
-        connectTimeoutMS: 10000,
-        retryWrites: true,
-        retryReads: true,
-        // REMOVED these options that cause "bufferMaxEntries is not supported":
-        // bufferCommands: false,     ❌ DEPRECATED
-        // bufferMaxEntries: 0,       ❌ DEPRECATED AND CAUSES ERROR
-        // useNewUrlParser: true,     ❌ DEPRECATED
-        // useUnifiedTopology: true   ❌ DEPRECATED
-        ...options
-    };
-
-    try {
-        // Set Mongoose settings at the library level
-        mongoose.set('strictQuery', false);
-        mongoose.set('bufferCommands', false); // This is the correct way
-        
-        await mongoose.connect(connectionString, defaultOptions);
-        this.isConnected = true;
-        this.connectionRetries = 0;
-        this.logger.info('✅ MongoDB connected successfully');
-        
-        // Setup connection event handlers
-        this.setupEventHandlers();
-        
-        return true;
-    } catch (error) {
-        this.connectionRetries++;
-        this.logger.error(`❌ MongoDB connection failed (attempt ${this.connectionRetries}/${this.maxRetries}): ${error.message}`);
-        
-        if (this.connectionRetries < this.maxRetries) {
-            const delay = Math.min(1000 * Math.pow(2, this.connectionRetries), 30000);
-            this.logger.info(`🔄 Retrying connection in ${delay}ms...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
-            return this.connect(connectionString, options);
+        try {
+            // Set Mongoose settings at the library level
+            mongoose.set('strictQuery', false);
+            mongoose.set('bufferCommands', false); // This is the correct way
+            
+            await mongoose.connect(connectionString, finalOptions);
+            this.isConnected = true;
+            this.connectionRetries = 0;
+            this.logger.info('✅ MongoDB connected successfully');
+            
+            // Setup connection event handlers
+            this.setupEventHandlers();
+            
+            return true;
+        } catch (error) {
+            this.connectionRetries++;
+            this.logger.error(`❌ MongoDB connection failed (attempt ${this.connectionRetries}/${this.maxRetries}): ${error.message}`);
+            
+            if (this.connectionRetries < this.maxRetries) {
+                const delay = Math.min(1000 * Math.pow(2, this.connectionRetries), 30000);
+                this.logger.info(`🔄 Retrying connection in ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                return this.connect(connectionString, options);
+            }
+            
+            throw error;
         }
-        
-        throw error;
     }
-}
 
-// ENSURE this setupEventHandlers method exists and is correct:
-setupEventHandlers() {
-    mongoose.connection.on('error', (error) => {
-        this.logger.error(`❌ MongoDB connection error: ${error.message}`);
-        this.isConnected = false;
-    });
-
-    mongoose.connection.on('disconnected', () => {
-        this.logger.warn('⚠️ MongoDB disconnected');
-        this.isConnected = false;
-    });
-
-    mongoose.connection.on('reconnected', () => {
-        this.logger.info('✅ MongoDB reconnected');
-        this.isConnected = true;
-    });
-
-    mongoose.connection.on('connected', () => {
-        this.logger.info('🔗 MongoDB connection established');
-        this.isConnected = true;
-    });
-}
-
+    // 🔥 FIXED: Correct event handler setup
     setupEventHandlers() {
         mongoose.connection.on('error', (error) => {
             this.logger.error(`❌ MongoDB connection error: ${error.message}`);
@@ -107,6 +81,11 @@ setupEventHandlers() {
 
         mongoose.connection.on('reconnected', () => {
             this.logger.info('✅ MongoDB reconnected');
+            this.isConnected = true;
+        });
+
+        mongoose.connection.on('connected', () => {
+            this.logger.info('🔗 MongoDB connection established');
             this.isConnected = true;
         });
     }
