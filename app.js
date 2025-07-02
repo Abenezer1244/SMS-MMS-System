@@ -1083,6 +1083,9 @@ async handleAddMemberCommand(adminPhone, commandText) {
     }
 }
 
+// Replace your handleRemoveMemberCommand method in app.js with this version
+// This will COMPLETELY delete the member from the database
+
 async handleRemoveMemberCommand(adminPhone, commandText) {
     const startTime = Date.now();
     logger.info(`🗑️ Admin REMOVE command from ${adminPhone}: ${commandText}`);
@@ -1095,93 +1098,159 @@ async handleRemoveMemberCommand(adminPhone, commandText) {
             return "❌ Access denied. Only church administrators can remove members.";
         }
 
-        // Parse the REMOVE command: "REMOVE +2134567653 Yuis"
+        // Parse the REMOVE command: "REMOVE +2068001141 MemberName"
         const parts = commandText.trim().split(/\s+/);
         
-        if (parts.length < 3) {
-            return "❌ Invalid format. Use: REMOVE +1234567890 MemberName";
+        if (parts.length < 2) {
+            return "❌ Invalid format. Use: REMOVE +1234567890 [optional name]\n💡 Example: REMOVE +12068001141\n💡 With name: REMOVE +12068001141 John Smith";
         }
 
         const [command, phoneNumber, ...nameParts] = parts;
         const memberName = nameParts.join(' ').trim();
 
         if (command.toUpperCase() !== 'REMOVE') {
-            return "❌ Command not recognized. Use: REMOVE +1234567890 MemberName";
-        }
-
-        if (!memberName) {
-            return "❌ Member name is required for verification. Use: REMOVE +1234567890 MemberName";
+            return "❌ Command not recognized. Use: REMOVE +1234567890 [optional name]";
         }
 
         // Clean and validate phone number
         const cleanPhone = this.cleanPhoneNumber(phoneNumber);
         if (!cleanPhone) {
-            return `❌ Invalid phone number format: ${phoneNumber}. Use format: +1234567890`;
+            return `❌ Invalid phone number: ${phoneNumber}\n💡 Use format: +1234567890 or 2068001141`;
         }
 
-        // Find the member to remove
-        const memberToRemove = await this.getMemberInfo(cleanPhone);
-        if (!memberToRemove) {
-            return `❌ Member not found: ${cleanPhone}. Cannot remove non-existent member.`;
+        logger.info(`🔍 Looking for member to remove: ${cleanPhone}`);
+
+        // Find ALL members with this phone number (including inactive ones)
+        const membersToRemove = await Member.find({ phoneNumber: cleanPhone });
+        
+        if (membersToRemove.length === 0) {
+            // Try alternative phone number formats
+            const phoneDigits = cleanPhone.replace(/\D/g, '');
+            const alternativeFormats = [
+                phoneNumber,           // Original input
+                phoneDigits,          // Just digits
+                `+1${phoneDigits}`,   // +1 prefix
+                `+${phoneDigits}`,    // + prefix
+                `1${phoneDigits}`     // 1 prefix
+            ];
+
+            let found = false;
+            for (const altFormat of alternativeFormats) {
+                const altMembers = await Member.find({ phoneNumber: altFormat });
+                if (altMembers.length > 0) {
+                    membersToRemove.push(...altMembers);
+                    found = true;
+                    logger.info(`📞 Found member(s) with alternative format: ${altFormat}`);
+                }
+            }
+
+            if (!found) {
+                return `❌ No member found with phone number: ${cleanPhone}\n\n💡 Check the phone number or view all members with /debug endpoint`;
+            }
         }
 
-        // Verify name matches for extra security
-        if (memberToRemove.name.toLowerCase() !== memberName.toLowerCase()) {
-            return `❌ Name verification failed!\n` +
-                   `Expected: ${memberToRemove.name}\n` +
-                   `Provided: ${memberName}\n` +
-                   `Please check the name and try again.`;
+        // If name is provided, verify it matches
+        if (memberName) {
+            const nameMatch = membersToRemove.find(member => 
+                member.name.toLowerCase() === memberName.toLowerCase()
+            );
+            
+            if (!nameMatch) {
+                const memberNames = membersToRemove.map(m => m.name).join(', ');
+                return `❌ Name verification failed!\n📱 Phone: ${cleanPhone}\n💾 Found members: ${memberNames}\n✏️ Your input: ${memberName}\n\n💡 Use exact name or remove without name for phone-only deletion.`;
+            }
         }
 
         // Prevent admin from removing themselves
-        if (cleanPhone === adminPhone) {
-            return "❌ You cannot remove yourself from the system. Contact another admin.";
+        if (cleanPhone === this.cleanPhoneNumber(adminPhone)) {
+            return "❌ You cannot remove yourself from the system.\n\n💡 Contact another admin to remove your account.";
         }
 
-        // Prevent removing other admins (safety feature)
-        if (memberToRemove.isAdmin) {
-            return `❌ Cannot remove admin member: ${memberToRemove.name}. Only admins can remove other admins through database.`;
+        // Show what will be deleted and ask for confirmation
+        let confirmationMessage = `🗑️ PERMANENT DELETION CONFIRMATION:\n\n`;
+        confirmationMessage += `📱 Phone: ${cleanPhone}\n`;
+        confirmationMessage += `👥 Members to delete: ${membersToRemove.length}\n\n`;
+        
+        membersToRemove.forEach((member, index) => {
+            const status = member.active ? 'Active' : 'Inactive';
+            const admin = member.isAdmin ? ' [ADMIN]' : '';
+            confirmationMessage += `${index + 1}. ${member.name}${admin} (${status})\n`;
+        });
+
+        // Check if any are admins
+        const adminMembers = membersToRemove.filter(m => m.isAdmin);
+        if (adminMembers.length > 0) {
+            return `❌ Cannot remove admin member(s): ${adminMembers.map(m => m.name).join(', ')}\n\n💡 Admin members must be removed through database management tools for security.`;
         }
 
         // Store member info for response before deletion
-        const memberInfo = {
-            name: memberToRemove.name,
-            phone: memberToRemove.phoneNumber,
-            groups: memberToRemove.groups || []
+        const deletionInfo = {
+            count: membersToRemove.length,
+            members: membersToRemove.map(m => ({
+                name: m.name,
+                phone: m.phoneNumber,
+                id: m._id,
+                active: m.active
+            }))
         };
 
-        // Remove member from database (soft delete by setting active: false)
-        await this.dbManager.dbManager?.updateOne?.(
-            { phoneNumber: cleanPhone },
-            { 
-                active: false,
-                removedAt: new Date(),
-                removedBy: admin.name
+        logger.info(`🗑️ PERMANENTLY DELETING ${membersToRemove.length} member(s) with phone ${cleanPhone}`);
+
+        try {
+            // COMPLETE DELETION - Remove from database entirely
+            const deleteResult = await Member.deleteMany({ 
+                _id: { $in: membersToRemove.map(m => m._id) }
+            });
+
+            if (deleteResult.deletedCount === 0) {
+                return `❌ Failed to delete members.\n\n💡 Members may have already been removed.`;
             }
-        ) || await Member.findOneAndUpdate(
-            { phoneNumber: cleanPhone },
-            { 
-                active: false,
-                removedAt: new Date(),
-                removedBy: admin.name
+
+            // Also clean up any related data (broadcast messages, delivery logs, etc.)
+            try {
+                // Remove any broadcast messages from these members
+                const phoneNumbers = membersToRemove.map(m => m.phoneNumber);
+                await BroadcastMessage.deleteMany({ fromPhone: { $in: phoneNumbers } });
+                
+                // Remove any delivery logs to these members
+                await DeliveryLog.deleteMany({ toPhone: { $in: phoneNumbers } });
+                
+                logger.info(`🧹 Cleaned up related data for deleted members`);
+            } catch (cleanupError) {
+                logger.warn(`⚠️ Error cleaning up related data: ${cleanupError.message}`);
+                // Continue anyway - main deletion succeeded
             }
-        );
 
-        // Log the removal for audit trail
-        await this.dbManager.recordAnalytic('member_removed_via_command', 1, 
-            `Admin: ${admin.name}, Removed Member: ${memberInfo.name} (${cleanPhone})`);
+            // Log the removal for audit trail
+            await this.dbManager.recordAnalytic('member_permanently_deleted', deletionInfo.count, 
+                `Admin: ${admin.name}, Deleted: ${deletionInfo.members.map(m => `${m.name} (${m.phone})`).join(', ')}`);
 
-        const durationMs = Date.now() - startTime;
-        await this.recordPerformanceMetric('remove_member_command', durationMs, true);
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('remove_member_command', durationMs, true);
 
-        logger.info(`🗑️ Admin ${admin.name} removed member: ${memberInfo.name} (${cleanPhone})`);
+            logger.info(`✅ Admin ${admin.name} PERMANENTLY deleted ${deleteResult.deletedCount} member(s)`);
 
-        // Return success message to admin
-        return `✅ Member removed successfully!\n` +
-               `👤 Name: ${memberInfo.name}\n` +
-               `📱 Phone: ${cleanPhone}\n` +
-               `🗑️ Status: Deactivated\n` +
-               `📊 Remaining active members: ${await this.dbManager.getAllActiveMembers().then(m => m.length)}`;
+            // Get updated member count
+            const remainingMembers = await this.dbManager.getAllActiveMembers();
+
+            // Return detailed success message
+            let successMessage = `✅ Member(s) PERMANENTLY DELETED!\n\n`;
+            successMessage += `📊 Deleted: ${deleteResult.deletedCount} member(s)\n`;
+            
+            deletionInfo.members.forEach((member, index) => {
+                successMessage += `${index + 1}. ${member.name} (${member.phone})\n`;
+            });
+            
+            successMessage += `\n📊 Remaining active members: ${remainingMembers.length}\n\n`;
+            successMessage += `✅ Phone number ${cleanPhone} is now available for re-use\n`;
+            successMessage += `💡 You can now ADD a new member with this phone number`;
+
+            return successMessage;
+
+        } catch (deleteError) {
+            logger.error(`❌ Database error deleting member: ${deleteError.message}`);
+            return `❌ Database error occurred while deleting member.\n\n💡 Error: ${deleteError.message}\nPlease try again or contact tech support.`;
+        }
 
     } catch (error) {
         const durationMs = Date.now() - startTime;
@@ -1190,9 +1259,231 @@ async handleRemoveMemberCommand(adminPhone, commandText) {
         logger.error(`❌ REMOVE command error: ${error.message}`);
         logger.error(`❌ Stack trace: ${error.stack}`);
         
-        return "❌ System error occurred while removing member. Tech team has been notified.";
+        return "❌ System error occurred while removing member.\n\n💡 Tech team has been notified. Please try again later.";
     }
 }
+
+// Add this new method to your ProductionChurchSMS class in app.js
+// This will handle database cleanup and duplicate removal
+
+async handleCleanupCommand(adminPhone, commandText) {
+    const startTime = Date.now();
+    logger.info(`🧹 Admin CLEANUP command from ${adminPhone}: ${commandText}`);
+
+    try {
+        // Verify admin privileges
+        const admin = await this.getMemberInfo(adminPhone);
+        if (!admin || !admin.isAdmin) {
+            logger.warn(`❌ Non-admin attempted CLEANUP command: ${adminPhone}`);
+            return "❌ Access denied. Only church administrators can run cleanup operations.";
+        }
+
+        const parts = commandText.trim().split(/\s+/);
+        const subCommand = parts[1]?.toUpperCase() || 'STATUS';
+
+        switch (subCommand) {
+            case 'STATUS':
+                return await this.getCleanupStatus();
+            
+            case 'DUPLICATES':
+                return await this.cleanupDuplicates();
+            
+            case 'PHONE':
+                if (parts.length < 3) {
+                    return "❌ Usage: CLEANUP PHONE +1234567890\n💡 This removes ALL members with that phone number";
+                }
+                return await this.cleanupPhone(parts[2]);
+            
+            case 'ORPHANED':
+                return await this.cleanupOrphanedData();
+            
+            default:
+                return `❌ Unknown cleanup command: ${subCommand}\n\n📋 Available commands:\n• CLEANUP STATUS - Show cleanup status\n• CLEANUP DUPLICATES - Remove duplicate phone numbers\n• CLEANUP PHONE +1234567890 - Remove all members with phone\n• CLEANUP ORPHANED - Remove orphaned data`;
+        }
+
+    } catch (error) {
+        logger.error(`❌ CLEANUP command error: ${error.message}`);
+        return "❌ Cleanup operation failed. Tech team has been notified.";
+    }
+}
+
+async getCleanupStatus() {
+    try {
+        // Find duplicates
+        const duplicates = await Member.aggregate([
+            { $group: { _id: "$phoneNumber", count: { $sum: 1 }, docs: { $push: "$$ROOT" } } },
+            { $match: { count: { $gt: 1 } } }
+        ]);
+
+        // Count inactive members
+        const inactiveCount = await Member.countDocuments({ active: false });
+        
+        // Count orphaned data
+        const orphanedMessages = await BroadcastMessage.countDocuments({
+            fromPhone: { $nin: await Member.distinct('phoneNumber') }
+        });
+
+        let status = `🧹 DATABASE CLEANUP STATUS\n\n`;
+        status += `📊 Duplicate phone numbers: ${duplicates.length}\n`;
+        status += `👻 Inactive members: ${inactiveCount}\n`;
+        status += `📨 Orphaned messages: ${orphanedMessages}\n\n`;
+
+        if (duplicates.length > 0) {
+            status += `⚠️ DUPLICATES FOUND:\n`;
+            duplicates.slice(0, 5).forEach(dup => {
+                status += `📱 ${dup._id}: ${dup.count} copies\n`;
+            });
+            if (duplicates.length > 5) {
+                status += `... and ${duplicates.length - 5} more\n`;
+            }
+            status += `\n💡 Use: CLEANUP DUPLICATES to fix\n`;
+        }
+
+        if (inactiveCount > 0) {
+            status += `\n👻 ${inactiveCount} inactive members taking up space\n`;
+            status += `💡 Use: CLEANUP ORPHANED to remove\n`;
+        }
+
+        return status;
+
+    } catch (error) {
+        logger.error(`❌ Error getting cleanup status: ${error.message}`);
+        return "❌ Error checking cleanup status";
+    }
+}
+
+async cleanupDuplicates() {
+    try {
+        const duplicates = await Member.aggregate([
+            { $group: { _id: "$phoneNumber", count: { $sum: 1 }, docs: { $push: "$$ROOT" } } },
+            { $match: { count: { $gt: 1 } } }
+        ]);
+
+        if (duplicates.length === 0) {
+            return "✅ No duplicate phone numbers found";
+        }
+
+        let deletedCount = 0;
+        let keptCount = 0;
+        let results = `🧹 CLEANING UP ${duplicates.length} DUPLICATE PHONE NUMBERS\n\n`;
+
+        for (const duplicate of duplicates) {
+            // Keep the oldest active member, or just the oldest if none are active
+            const activeDocs = duplicate.docs.filter(doc => doc.active);
+            const keepDoc = activeDocs.length > 0 
+                ? activeDocs.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))[0]
+                : duplicate.docs.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))[0];
+            
+            const toDelete = duplicate.docs.filter(doc => doc._id.toString() !== keepDoc._id.toString());
+            
+            results += `📱 ${duplicate._id}: Keeping ${keepDoc.name}, deleting ${toDelete.length}\n`;
+            
+            // Delete the duplicates
+            for (const doc of toDelete) {
+                await Member.findByIdAndDelete(doc._id);
+                deletedCount++;
+            }
+            keptCount++;
+        }
+
+        results += `\n✅ CLEANUP COMPLETE:\n`;
+        results += `🗑️ Deleted: ${deletedCount} duplicates\n`;
+        results += `✅ Kept: ${keptCount} members\n`;
+        results += `💡 All phone numbers are now unique`;
+
+        await this.dbManager.recordAnalytic('duplicates_cleaned', deletedCount, `Deleted ${deletedCount} duplicates, kept ${keptCount}`);
+
+        return results;
+
+    } catch (error) {
+        logger.error(`❌ Error cleaning duplicates: ${error.message}`);
+        return `❌ Error cleaning duplicates: ${error.message}`;
+    }
+}
+
+async cleanupPhone(phoneInput) {
+    try {
+        const cleanPhone = this.cleanPhoneNumber(phoneInput);
+        if (!cleanPhone) {
+            return `❌ Invalid phone number: ${phoneInput}`;
+        }
+
+        // Find all members with this phone (any format)
+        const phoneDigits = cleanPhone.replace(/\D/g, '');
+        const formats = [
+            cleanPhone,
+            phoneInput,
+            phoneDigits,
+            `+1${phoneDigits}`,
+            `+${phoneDigits}`,
+            `1${phoneDigits}`
+        ];
+
+        const members = await Member.find({ phoneNumber: { $in: formats } });
+        
+        if (members.length === 0) {
+            return `❌ No members found with phone: ${cleanPhone}`;
+        }
+
+        // Delete all members with this phone
+        const memberIds = members.map(m => m._id);
+        const phoneNumbers = members.map(m => m.phoneNumber);
+
+        await Member.deleteMany({ _id: { $in: memberIds } });
+        await BroadcastMessage.deleteMany({ fromPhone: { $in: phoneNumbers } });
+        await DeliveryLog.deleteMany({ toPhone: { $in: phoneNumbers } });
+
+        let result = `✅ COMPLETELY REMOVED ALL DATA FOR: ${cleanPhone}\n\n`;
+        result += `🗑️ Deleted members: ${members.length}\n`;
+        members.forEach((member, index) => {
+            const status = member.active ? 'Active' : 'Inactive';
+            const admin = member.isAdmin ? ' [ADMIN]' : '';
+            result += `${index + 1}. ${member.name}${admin} (${status})\n`;
+        });
+        result += `\n✅ Phone number ${cleanPhone} is now completely available\n`;
+        result += `💡 You can now ADD a new member with this phone number`;
+
+        return result;
+
+    } catch (error) {
+        logger.error(`❌ Error cleaning phone: ${error.message}`);
+        return `❌ Error cleaning phone: ${error.message}`;
+    }
+}
+
+async cleanupOrphanedData() {
+    try {
+        const activePhones = await Member.distinct('phoneNumber', { active: true });
+        
+        // Remove inactive members completely
+        const inactiveResult = await Member.deleteMany({ active: false });
+        
+        // Remove orphaned messages
+        const messagesResult = await BroadcastMessage.deleteMany({
+            fromPhone: { $nin: activePhones }
+        });
+        
+        // Remove orphaned delivery logs
+        const deliveryResult = await DeliveryLog.deleteMany({
+            toPhone: { $nin: activePhones }
+        });
+
+        let result = `🧹 ORPHANED DATA CLEANUP COMPLETE\n\n`;
+        result += `👻 Removed inactive members: ${inactiveResult.deletedCount}\n`;
+        result += `📨 Removed orphaned messages: ${messagesResult.deletedCount}\n`;
+        result += `📊 Removed orphaned delivery logs: ${deliveryResult.deletedCount}\n\n`;
+        result += `✅ Database is now clean and optimized`;
+
+        return result;
+
+    } catch (error) {
+        logger.error(`❌ Error cleaning orphaned data: ${error.message}`);
+        return `❌ Error cleaning orphaned data: ${error.message}`;
+    }
+}
+
+
+
 
 // Modify the existing handleIncomingMessage method to include ADD command detection
 // Enhanced handleIncomingMessage method with both ADD and REMOVE commands
@@ -1264,6 +1555,11 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
             return await this.handleRemoveMemberCommand(fromPhone, messageBody);
         }
 
+        // Check for CLEANUP command (admin only)
+        if (messageBody.toUpperCase().startsWith('CLEANUP ') || messageBody.toUpperCase() === 'CLEANUP') {
+            return await this.handleCleanupCommand(fromPhone, messageBody);
+        }
+
         // Regular message broadcasting
         logger.info('📡 Processing message broadcast...');
         return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
@@ -1274,6 +1570,9 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
         return "Message processing temporarily unavailable - please try again";
     }
 }
+
+
+
 }
 // Initialize production system
 logger.info('STARTING: Initializing Production Church SMS System with MongoDB...');
