@@ -313,6 +313,9 @@ initializeServices() {
 
 
 // In your ProductionChurchSMS class, replace the initializeDatabase method:
+// PRODUCTION FIXES FOR app.js
+// Replace your entire initializeDatabase() method with this corrected version:
+
 async initializeDatabase() {
     const maxRetries = 5;
     let retryCount = 0;
@@ -328,7 +331,7 @@ async initializeDatabase() {
                 logger.info(`🔄 MongoDB connection retry ${retryCount}/${maxRetries}`);
             }
             
-            // CORRECTED connection options - removed ALL deprecated options
+            // FIXED: Corrected connection options - removed ALL deprecated options
             const options = {
                 // Core connection settings
                 maxPoolSize: 10,
@@ -361,8 +364,8 @@ async initializeDatabase() {
                 this.dbManager.connectionRetries = 0;
             }
             
-            // Setup event handlers
-            this.setupMongoEventHandlers();
+            // FIXED: Setup event handlers (this was the missing method causing the primary error)
+            this.setupMongooseEventHandlers();
             
             logger.info('✅ Production MongoDB with smart reaction tracking initialized');
             return; // Success!
@@ -384,6 +387,66 @@ async initializeDatabase() {
             }
         }
     }
+}
+
+// ADD this missing method to your ProductionChurchSMS class:
+setupMongooseEventHandlers() {
+    mongoose.connection.on('error', (error) => {
+        logger.error(`❌ MongoDB connection error: ${error.message}`);
+        if (this.dbManager) {
+            this.dbManager.isConnected = false;
+        }
+    });
+
+    mongoose.connection.on('disconnected', () => {
+        logger.warn('⚠️ MongoDB disconnected');
+        if (this.dbManager) {
+            this.dbManager.isConnected = false;
+        }
+    });
+
+    mongoose.connection.on('reconnected', () => {
+        logger.info('✅ MongoDB reconnected');
+        if (this.dbManager) {
+            this.dbManager.isConnected = true;
+        }
+    });
+
+    mongoose.connection.on('connected', () => {
+        logger.info('🔗 MongoDB connected successfully');
+        if (this.dbManager) {
+            this.dbManager.isConnected = true;
+        }
+    });
+}
+
+// ALSO ADD this corrected buildMongoConnectionString method:
+buildMongoConnectionString() {
+    const {
+        uri, host, port, database, username, password, authSource
+    } = config.mongodb;
+
+    // If URI is provided, use it directly
+    if (uri && uri !== 'undefined' && !uri.includes('localhost')) {
+        logger.info('📋 Using provided MongoDB URI');
+        return uri;
+    }
+
+    // Build connection string from components
+    let connectionString = 'mongodb://';
+    
+    if (username && password && username !== 'undefined' && password !== 'undefined') {
+        connectionString += `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`;
+    }
+    
+    connectionString += `${host || 'localhost'}:${port || '27017'}/${database || 'yesuway_church'}`;
+    
+    if (username && password && username !== 'undefined' && password !== 'undefined') {
+        connectionString += `?authSource=${authSource || 'admin'}`;
+    }
+
+    logger.info(`📋 Built MongoDB connection string for: ${host || 'localhost'}:${port || '27017'}`);
+    return connectionString;
 }
 
 cleanPhoneNumber(phone) {
