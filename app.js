@@ -943,66 +943,172 @@ class ProductionChurchSMS {
         }
     }
 
-    async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
-        logger.info(`📨 Incoming message from ${fromPhone}`);
+    // Add this method to the ProductionChurchSMS class in app.js
 
-        try {
-            fromPhone = this.cleanPhoneNumber(fromPhone);
-            
-            messageBody = messageBody ? messageBody.trim() : "";
-            
-            if (!messageBody && mediaUrls && mediaUrls.length > 0) {
-                messageBody = `[Media content - ${mediaUrls.length} file(s)]`;
-            }
-            
-            if (!messageBody) {
-                messageBody = "[Empty message]";
-            }
+async handleAddMemberCommand(adminPhone, commandText) {
+    const startTime = Date.now();
+    logger.info(`🔧 Admin ADD command from ${adminPhone}: ${commandText}`);
 
-            if (mediaUrls && mediaUrls.length > 0) {
-                logger.info(`📎 Received ${mediaUrls.length} media files`);
-                for (let i = 0; i < mediaUrls.length; i++) {
-                    const media = mediaUrls[i];
-                    logger.info(`   Media ${i + 1}: ${media.type || 'unknown'} - ${media.url || 'no URL'}`);
-                }
-            }
-
-            const member = await this.getMemberInfo(fromPhone);
-
-            if (!member) {
-                logger.warn(`❌ Rejected message from unregistered number: ${fromPhone}`);
-                await this.sendSMS(
-                    fromPhone,
-                    "You are not registered in the church SMS system. Please contact a church administrator to be added."
-                );
-                return null;
-            }
-
-            logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
-
-            if (messageBody.toUpperCase() === 'HELP') {
-                return (
-                    "📋 YESUWAY CHURCH SMS SYSTEM\n\n" +
-                    "✅ Send messages to entire congregation\n" +
-                    "✅ Share photos/videos (unlimited size)\n" +
-                    "✅ Clean media links (no technical details)\n" +
-                    "✅ Full quality preserved automatically\n\n" +
-                    "📱 Text HELP for this message\n" +
-                    "🏛️ Production system - serving 24/7\n" +
-                    "🗄️ Powered by MongoDB for scalable performance"
-                );
-            }
-
-            logger.info('📡 Processing message broadcast...');
-            return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
-        } catch (error) {
-            logger.error(`❌ Message processing error: ${error.message}`);
-            logger.error(`❌ Stack trace: ${error.stack}`);
-            return "Message processing temporarily unavailable - please try again";
+    try {
+        // Verify admin privileges
+        const admin = await this.getMemberInfo(adminPhone);
+        if (!admin || !admin.isAdmin) {
+            logger.warn(`❌ Non-admin attempted ADD command: ${adminPhone}`);
+            return "❌ Access denied. Only church administrators can add new members.";
         }
+
+        // Parse the ADD command: "ADD +15425636786 DANE"
+        const parts = commandText.trim().split(/\s+/);
+        
+        if (parts.length < 3) {
+            return "❌ Invalid format. Use: ADD +1234567890 MemberName";
+        }
+
+        const [command, phoneNumber, ...nameParts] = parts;
+        const memberName = nameParts.join(' ').trim();
+
+        if (command.toUpperCase() !== 'ADD') {
+            return "❌ Command not recognized. Use: ADD +1234567890 MemberName";
+        }
+
+        if (!memberName) {
+            return "❌ Member name is required. Use: ADD +1234567890 MemberName";
+        }
+
+        // Clean and validate phone number
+        const cleanPhone = this.cleanPhoneNumber(phoneNumber);
+        if (!cleanPhone) {
+            return `❌ Invalid phone number format: ${phoneNumber}. Use format: +1234567890`;
+        }
+
+        // Check if member already exists
+        const existingMember = await this.getMemberInfo(cleanPhone);
+        if (existingMember) {
+            return `❌ Member already exists: ${existingMember.name} (${cleanPhone})`;
+        }
+
+        // Get the default congregation group
+        const congregationGroup = await this.dbManager.getGroupByName("YesuWay Congregation");
+        if (!congregationGroup) {
+            logger.error('❌ Default congregation group not found');
+            return "❌ System error: Default congregation group not found. Contact tech support.";
+        }
+
+        // Create new member
+        const newMember = await this.dbManager.createMember({
+            phoneNumber: cleanPhone,
+            name: memberName,
+            isAdmin: false,
+            active: true,
+            messageCount: 0,
+            lastActivity: new Date(),
+            groups: [{
+                groupId: congregationGroup._id,
+                joinedAt: new Date()
+            }]
+        });
+
+        // Log the addition for audit trail
+        await this.dbManager.recordAnalytic('member_added_via_command', 1, 
+            `Admin: ${admin.name}, New Member: ${memberName} (${cleanPhone})`);
+
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('add_member_command', durationMs, true);
+
+        logger.info(`✅ Admin ${admin.name} added new member: ${memberName} (${cleanPhone})`);
+
+        // Return success message to admin
+        return `✅ Member added successfully!\n` +
+               `👤 Name: ${memberName}\n` +
+               `📱 Phone: ${cleanPhone}\n` +
+               `🏛️ Group: ${congregationGroup.name}\n` +
+               `📊 Total active members: ${await this.dbManager.getAllActiveMembers().then(m => m.length)}`;
+
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('add_member_command', durationMs, false, error.message);
+        
+        logger.error(`❌ ADD command error: ${error.message}`);
+        logger.error(`❌ Stack trace: ${error.stack}`);
+        
+        return "❌ System error occurred while adding member. Tech team has been notified.";
     }
 }
 
+// Modify the existing handleIncomingMessage method to include ADD command detection
+async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
+    logger.info(`📨 Incoming message from ${fromPhone}`);
+
+    try {
+        fromPhone = this.cleanPhoneNumber(fromPhone);
+        
+        messageBody = messageBody ? messageBody.trim() : "";
+        
+        if (!messageBody && mediaUrls && mediaUrls.length > 0) {
+            messageBody = `[Media content - ${mediaUrls.length} file(s)]`;
+        }
+        
+        if (!messageBody) {
+            messageBody = "[Empty message]";
+        }
+
+        if (mediaUrls && mediaUrls.length > 0) {
+            logger.info(`📎 Received ${mediaUrls.length} media files`);
+            for (let i = 0; i < mediaUrls.length; i++) {
+                const media = mediaUrls[i];
+                logger.info(`   Media ${i + 1}: ${media.type || 'unknown'} - ${media.url || 'no URL'}`);
+            }
+        }
+
+        const member = await this.getMemberInfo(fromPhone);
+
+        if (!member) {
+            logger.warn(`❌ Rejected message from unregistered number: ${fromPhone}`);
+            await this.sendSMS(
+                fromPhone,
+                "You are not registered in the church SMS system. Please contact a church administrator to be added."
+            );
+            return null;
+        }
+
+        logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
+
+        // Check for HELP command
+        if (messageBody.toUpperCase() === 'HELP') {
+            let helpMessage = "📋 YESUWAY CHURCH SMS SYSTEM\n\n" +
+                            "✅ Send messages to entire congregation\n" +
+                            "✅ Share photos/videos (unlimited size)\n" +
+                            "✅ Clean media links (no technical details)\n" +
+                            "✅ Full quality preserved automatically\n\n" +
+                            "📱 Text HELP for this message\n" +
+                            "🏛️ Production system - serving 24/7\n" +
+                            "🗄️ Powered by MongoDB for scalable performance";
+            
+            // Add admin commands to help if user is admin
+            if (member.isAdmin) {
+                helpMessage += "\n\n🔑 ADMIN COMMANDS:\n" +
+                             "• ADD +1234567890 MemberName - Add new member to congregation";
+            }
+            
+            return helpMessage;
+        }
+
+        // Check for ADD command (admin only)
+        if (messageBody.toUpperCase().startsWith('ADD ')) {
+            return await this.handleAddMemberCommand(fromPhone, messageBody);
+        }
+
+        // Regular message broadcasting
+        logger.info('📡 Processing message broadcast...');
+        return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
+        
+    } catch (error) {
+        logger.error(`❌ Message processing error: ${error.message}`);
+        logger.error(`❌ Stack trace: ${error.stack}`);
+        return "Message processing temporarily unavailable - please try again";
+    }
+}
+}
 // Initialize production system
 logger.info('STARTING: Initializing Production Church SMS System with MongoDB...');
 let smsSystem;
