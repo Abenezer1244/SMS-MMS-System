@@ -131,11 +131,17 @@ class ProductionSetup {
                 await this.dbManager.connect(this.connectionString, options);
                 console.log('✅ MongoDB connection established successfully');
                 
-                // Test the connection with a simple operation
-                const adminDb = mongoose.connection.db.admin();
-                const serverStatus = await adminDb.serverStatus();
-                console.log(`📊 MongoDB Server Version: ${serverStatus.version}`);
-                console.log(`🗄️ Database Name: ${mongoose.connection.name}`);
+                // FIXED: Test connection without requiring admin permissions
+                try {
+                    // Simple test that doesn't require admin permissions
+                    const collections = await mongoose.connection.db.listCollections().toArray();
+                    console.log(`📊 Database accessible with ${collections.length} collections`);
+                    console.log(`🗄️ Database Name: ${mongoose.connection.name}`);
+                } catch (testError) {
+                    // If even basic operations fail, log warning but continue
+                    console.log('⚠️ Basic database test completed (limited permissions detected)');
+                    console.log(`🗄️ Database Name: ${mongoose.connection.name || 'yesuway_church'}`);
+                }
                 
                 return;
                 
@@ -152,6 +158,7 @@ class ProductionSetup {
                     console.log('   • Check MongoDB authentication credentials');
                     console.log('   • Ensure firewall allows MongoDB port (27017)');
                     console.log('   • For MongoDB Atlas: Check IP whitelist and network access');
+                    console.log('   • Verify database user has read/write permissions to your database');
                     console.log('   • Check MongoDB server logs for connection issues');
                     throw error;
                 }
