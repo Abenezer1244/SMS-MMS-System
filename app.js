@@ -948,6 +948,9 @@ class ProductionChurchSMS {
 // Enhanced ProductionChurchSMS class methods with ADD and REMOVE commands
 // Add these methods to your ProductionChurchSMS class in app.js
 
+// Enhanced handleAddMemberCommand method for app.js
+// Replace the existing method in your ProductionChurchSMS class
+
 async handleAddMemberCommand(adminPhone, commandText) {
     const startTime = Date.now();
     logger.info(`🔧 Admin ADD command from ${adminPhone}: ${commandText}`);
@@ -984,10 +987,16 @@ async handleAddMemberCommand(adminPhone, commandText) {
             return `❌ Invalid phone number format: ${phoneNumber}. Use format: +1234567890`;
         }
 
-        // Check if member already exists
-        const existingMember = await this.getMemberInfo(cleanPhone);
-        if (existingMember) {
-            return `❌ Member already exists: ${existingMember.name} (${cleanPhone})`;
+        // Check if member already exists - ENHANCED CHECK
+        try {
+            const existingMember = await this.getMemberInfo(cleanPhone);
+            if (existingMember) {
+                const status = existingMember.active ? "active" : "inactive";
+                const groupNames = existingMember.groups?.map(g => g.name).join(", ") || "no groups";
+                return `❌ Member already exists!\n👤 Name: ${existingMember.name}\n📱 Phone: ${cleanPhone}\n📊 Status: ${status}\n🏛️ Groups: ${groupNames}`;
+            }
+        } catch (checkError) {
+            logger.error(`❌ Error checking existing member: ${checkError.message}`);
         }
 
         // Get the default congregation group
@@ -997,35 +1006,64 @@ async handleAddMemberCommand(adminPhone, commandText) {
             return "❌ System error: Default congregation group not found. Contact tech support.";
         }
 
-        // Create new member
-        const newMember = await this.dbManager.createMember({
-            phoneNumber: cleanPhone,
-            name: memberName,
-            isAdmin: false,
-            active: true,
-            messageCount: 0,
-            lastActivity: new Date(),
-            groups: [{
-                groupId: congregationGroup._id,
-                joinedAt: new Date()
-            }]
-        });
+        // Create new member with enhanced error handling
+        try {
+            const newMember = await this.dbManager.createMember({
+                phoneNumber: cleanPhone,
+                name: memberName,
+                isAdmin: false,
+                active: true,
+                messageCount: 0,
+                lastActivity: new Date(),
+                groups: [{
+                    groupId: congregationGroup._id,
+                    joinedAt: new Date()
+                }]
+            });
 
-        // Log the addition for audit trail
-        await this.dbManager.recordAnalytic('member_added_via_command', 1, 
-            `Admin: ${admin.name}, New Member: ${memberName} (${cleanPhone})`);
+            // Log the addition for audit trail
+            await this.dbManager.recordAnalytic('member_added_via_command', 1, 
+                `Admin: ${admin.name}, New Member: ${memberName} (${cleanPhone})`);
 
-        const durationMs = Date.now() - startTime;
-        await this.recordPerformanceMetric('add_member_command', durationMs, true);
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('add_member_command', durationMs, true);
 
-        logger.info(`✅ Admin ${admin.name} added new member: ${memberName} (${cleanPhone})`);
+            logger.info(`✅ Admin ${admin.name} added new member: ${memberName} (${cleanPhone})`);
 
-        // Return success message to admin
-        return `✅ Member added successfully!\n` +
-               `👤 Name: ${memberName}\n` +
-               `📱 Phone: ${cleanPhone}\n` +
-               `🏛️ Group: ${congregationGroup.name}\n` +
-               `📊 Total active members: ${await this.dbManager.getAllActiveMembers().then(m => m.length)}`;
+            // Get updated member count
+            const totalMembers = await this.dbManager.getAllActiveMembers();
+
+            // Return success message to admin
+            return `✅ Member added successfully!\n` +
+                   `👤 Name: ${memberName}\n` +
+                   `📱 Phone: ${cleanPhone}\n` +
+                   `🏛️ Group: ${congregationGroup.name}\n` +
+                   `📊 Total active members: ${totalMembers.length}`;
+
+        } catch (createError) {
+            // Enhanced error handling for specific MongoDB errors
+            if (createError.code === 11000) {
+                // Duplicate key error
+                const duplicateField = createError.keyPattern ? Object.keys(createError.keyPattern)[0] : 'unknown';
+                const duplicateValue = createError.keyValue ? createError.keyValue[duplicateField] : 'unknown';
+                
+                logger.error(`❌ Duplicate key error: ${duplicateField} = ${duplicateValue}`);
+                
+                if (duplicateField === 'phoneNumber') {
+                    return `❌ Phone number already exists in database!\n📱 Number: ${duplicateValue}\n💡 Use a different phone number or check if member already registered.`;
+                } else {
+                    return `❌ Duplicate ${duplicateField}: ${duplicateValue} already exists in database.`;
+                }
+            } else if (createError.name === 'ValidationError') {
+                // Mongoose validation error
+                const validationErrors = Object.values(createError.errors).map(err => err.message).join(', ');
+                return `❌ Validation error: ${validationErrors}`;
+            } else {
+                // Other database errors
+                logger.error(`❌ Database error creating member: ${createError.message}`);
+                return `❌ Database error: Unable to create member. Please try again or contact tech support.`;
+            }
+        }
 
     } catch (error) {
         const durationMs = Date.now() - startTime;
@@ -1034,7 +1072,14 @@ async handleAddMemberCommand(adminPhone, commandText) {
         logger.error(`❌ ADD command error: ${error.message}`);
         logger.error(`❌ Stack trace: ${error.stack}`);
         
-        return "❌ System error occurred while adding member. Tech team has been notified.";
+        // Provide more specific error information
+        if (error.name === 'MongoNetworkError') {
+            return "❌ Database connection error. Please try again in a moment.";
+        } else if (error.name === 'MongoServerError' && error.code === 11000) {
+            return "❌ Member with this phone number already exists in the system.";
+        } else {
+            return "❌ System error occurred while adding member. Tech team has been notified.";
+        }
     }
 }
 
