@@ -16,7 +16,7 @@ require('dotenv').config();
 console.log('🔑 YesuWay Church SMS - Admin Setup');
 console.log('===================================');
 console.log('🎯 Target: Making Mike the primary admin');
-console.log('📞 Phone: +12068001141');
+console.log('📞 Phone: +14257729189');
 console.log('');
 
 class AdminSetup {
@@ -83,7 +83,7 @@ class AdminSetup {
         console.log('🔑 Promoting Mike to admin status...');
         
         try {
-            const mikePhone = '+12068001141';
+            const mikePhone = '+14257729189';
             
             // Find Mike in the database
             let mike = await Member.findOne({ phoneNumber: mikePhone });
@@ -169,7 +169,7 @@ class AdminSetup {
             });
             
             // Test admin capabilities
-            const mike = admins.find(admin => admin.phoneNumber === '+12068001141');
+            const mike = admins.find(admin => admin.phoneNumber === '+14257729189');
             if (mike) {
                 console.log('');
                 console.log('🎯 Mike Admin Capabilities:');
