@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -5,7 +6,6 @@ const rateLimit = require('express-rate-limit');
 const compression = require('compression');
 const twilio = require('twilio');
 const AWS = require('aws-sdk');
-const sqlite3 = require('sqlite3').verbose();
 const crypto = require('crypto');
 const fs = require('fs').promises;
 const path = require('path');
@@ -15,6 +15,20 @@ const schedule = require('node-schedule');
 const { v4: uuidv4 } = require('uuid');
 const winston = require('winston');
 const morgan = require('morgan');
+
+// MongoDB imports
+const MongoDBManager = require('./database');
+const {
+    Group,
+    Member,
+    BroadcastMessage,
+    MessageReaction,
+    ReactionSummary,
+    MediaFile,
+    DeliveryLog,
+    SystemAnalytics,
+    PerformanceMetrics
+} = require('./models');
 
 // Production logging configuration
 const logger = winston.createLogger({
@@ -41,7 +55,7 @@ const logger = winston.createLogger({
 });
 
 // Enhanced configuration with better defaults and validation
-require('dotenv').config({ silent: true }); // Silent to prevent errors if .env doesn't exist
+require('dotenv').config({ silent: true });
 
 // Production Configuration with robust defaults
 const config = {
@@ -57,6 +71,15 @@ const config = {
         bucketName: process.env.R2_BUCKET_NAME || 'church-media-production',
         publicUrl: process.env.R2_PUBLIC_URL || 'https://not-configured.example.com'
     },
+    mongodb: {
+        uri: process.env.MONGODB_URI,
+        host: process.env.MONGODB_HOST || 'localhost',
+        port: process.env.MONGODB_PORT || '27017',
+        database: process.env.MONGODB_DATABASE || 'yesuway_church',
+        username: process.env.MONGODB_USERNAME,
+        password: process.env.MONGODB_PASSWORD,
+        authSource: process.env.MONGODB_AUTH_SOURCE || 'admin'
+    },
     development: process.env.DEVELOPMENT_MODE?.toLowerCase() === 'true' || process.env.NODE_ENV === 'development' || false,
     port: parseInt(process.env.PORT) || 5000,
     environment: process.env.NODE_ENV || 'development'
@@ -69,10 +92,10 @@ logger.info(`   Development Mode: ${config.development}`);
 logger.info(`   Port: ${config.port}`);
 logger.info(`   Twilio Phone: ${config.twilio.phoneNumber}`);
 logger.info(`   R2 Bucket: ${config.r2.bucketName}`);
+logger.info(`   MongoDB Database: ${config.mongodb.database}`);
 logger.info(`   Twilio Configured: ${config.twilio.accountSid !== 'not_configured' && config.twilio.accountSid.startsWith('AC')}`);
 logger.info(`   R2 Configured: ${config.r2.accessKeyId !== 'not_configured' && config.r2.endpointUrl.startsWith('https://')}`);
-
-
+logger.info(`   MongoDB Configured: ${config.mongodb.uri !== undefined || config.mongodb.host !== 'localhost'}`);
 
 // Initialize Express app with production middleware
 const app = express();
@@ -103,6 +126,7 @@ class ProductionChurchSMS {
     constructor() {
         this.twilioClient = null;
         this.r2Client = null;
+        this.dbManager = new MongoDBManager(logger);
         this.conversationPauseTimer = null;
         this.lastRegularMessageTime = null;
         this.performanceMetrics = [];
@@ -111,14 +135,42 @@ class ProductionChurchSMS {
         this.initializeDatabase();
         this.startReactionScheduler();
         
-        logger.info('SUCCESS: Production Church SMS System with Smart Reaction Tracking initialized');
+        logger.info('SUCCESS: Production Church SMS System with MongoDB and Smart Reaction Tracking initialized');
     }
 
-    initializeServices() {
-        // Enhanced production-ready Twilio initialization
-        if (this.isValidTwilioCredentials()) {
-            try {
-                this.twilioClient = twilio(config.twilio.accountSid, config.twilio.authToken);
+buildMongoConnectionString() {
+    const {
+        uri, host, port, database, username, password, authSource
+    } = config.mongodb;
+
+    // If URI is provided, use it directly
+    if (uri && uri !== 'undefined' && !uri.includes('localhost')) {
+        logger.info('📋 Using provided MongoDB URI');
+        return uri;
+    }
+
+    // Build connection string from components
+    let connectionString = 'mongodb://';
+    
+    if (username && password && username !== 'undefined' && password !== 'undefined') {
+        connectionString += `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`;
+    }
+    
+    connectionString += `${host || 'localhost'}:${port || '27017'}/${database || 'yesuway_church'}`;
+    
+    if (username && password && username !== 'undefined' && password !== 'undefined') {
+        connectionString += `?authSource=${authSource || 'admin'}`;
+    }
+
+    logger.info(`📋 Built MongoDB connection string for: ${host || 'localhost'}:${port || '27017'}`);
+    return connectionString;
+}
+
+initializeServices() {
+    // Enhanced production-ready Twilio initialization
+    if (this.isValidTwilioCredentials()) {
+        try {
+            this.twilioClient = twilio(config.twilio.accountSid, config.twilio.authToken);
                 
                 // Test the connection with a simple API call
                 this.twilioClient.api.accounts(config.twilio.accountSid).fetch()
@@ -235,7 +287,7 @@ class ProductionChurchSMS {
         logger.info('🔧 SERVICE STATUS SUMMARY:');
         logger.info(`   📱 Twilio SMS: ${this.twilioClient ? '✅ Connected' : '❌ Unavailable (Mock Mode)'}`);
         logger.info(`   ☁️ R2 Storage: ${this.r2Client ? '✅ Connected' : '❌ Unavailable (Local Mode)'}`);
-        logger.info(`   🗄️ Database: ✅ SQLite Ready`);
+        logger.info(`   🗄️ MongoDB: ${this.dbManager.isConnected ? '✅ Connected' : '⏳ Connecting...'}`);
         logger.info(`   🔇 Reactions: ✅ Smart Tracking Active`);
         logger.info(`   🛡️ Security: ✅ Production Ready`);
         
@@ -247,287 +299,98 @@ class ProductionChurchSMS {
             logger.warn('⚠️ IMPORTANT: Cloud media storage disabled - configure R2 credentials for production');
         }
         
-        if (this.twilioClient && this.r2Client) {
+        if (this.twilioClient && this.r2Client && this.dbManager.isConnected) {
             logger.info('🚀 PRODUCTION READY: All services connected and operational');
         } else {
             logger.info('🛠️ DEVELOPMENT MODE: Some services mocked for local development');
         }
     }
 
-    async initializeDatabase() {
-        const maxRetries = 5;
-        let retryCount = 0;
-        
-        while (retryCount < maxRetries) {
-            try {
-                // Use a timeout to prevent hanging
-                const db = new sqlite3.Database('production_church.db', sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE);
-                
-                // Wait a bit if this is a retry
-                if (retryCount > 0) {
-                    await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-                    logger.info(`🔄 Database initialization retry ${retryCount}/${maxRetries}`);
-                }
-                
-                // Enable WAL mode and optimizations with timeout
-                await Promise.race([
-                    this.setupDatabase(db),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('Database setup timeout')), 30000))
-                ]);
 
-                db.close();
-                logger.info('✅ Production database with smart reaction tracking initialized');
-                return; // Success, exit the retry loop
+// COMPLETE REPLACEMENT FOR YOUR DATABASE CONNECTION CODE
+// Replace your entire initializeDatabase() method in app.js with this:
+
+
+
+// In your ProductionChurchSMS class, replace the initializeDatabase method:
+async initializeDatabase() {
+    const maxRetries = 5;
+    let retryCount = 0;
+    
+    // Build connection string
+    const connectionString = this.buildMongoConnectionString();
+    logger.info(`🔗 Attempting MongoDB connection to: ${connectionString.replace(/\/\/[^:]+:[^@]+@/, '//*****:*****@')}`);
+    
+    while (retryCount < maxRetries) {
+        try {
+            if (retryCount > 0) {
+                await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+                logger.info(`🔄 MongoDB connection retry ${retryCount}/${maxRetries}`);
+            }
+            
+            // CORRECTED connection options - removed ALL deprecated options
+            const options = {
+                // Core connection settings
+                maxPoolSize: 10,
+                minPoolSize: 5,
+                serverSelectionTimeoutMS: 5000,
+                socketTimeoutMS: 45000,
+                connectTimeoutMS: 10000,
                 
-            } catch (error) {
-                retryCount++;
-                logger.error(`❌ Database initialization attempt ${retryCount} failed: ${error.message}`);
+                // Retry settings
+                retryWrites: true,
+                retryReads: true
                 
-                if (retryCount >= maxRetries) {
-                    logger.error('❌ All database initialization attempts failed');
-                    // Don't throw error - continue with limited functionality
-                    logger.warn('⚠️ Continuing without full database initialization');
-                    logger.warn('⚠️ Some features may not work until database is properly initialized');
-                    return;
-                } else {
-                    logger.info(`🔄 Retrying in ${retryCount} seconds...`);
-                    await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+                // REMOVED these deprecated options that cause the error:
+                // bufferCommands: false,     ❌ DEPRECATED
+                // bufferMaxEntries: 0,       ❌ DEPRECATED 
+                // useNewUrlParser: true,     ❌ DEPRECATED
+                // useUnifiedTopology: true   ❌ DEPRECATED
+            };
+
+            // Configure mongoose settings
+            mongoose.set('strictQuery', false);
+            mongoose.set('bufferCommands', false); // Set at mongoose level instead
+            
+            // Direct connection
+            await mongoose.connect(connectionString, options);
+            
+            // Update manager state
+            if (this.dbManager) {
+                this.dbManager.isConnected = true;
+                this.dbManager.connectionRetries = 0;
+            }
+            
+            // Setup event handlers
+            this.setupMongoEventHandlers();
+            
+            logger.info('✅ Production MongoDB with smart reaction tracking initialized');
+            return; // Success!
+            
+        } catch (error) {
+            retryCount++;
+            logger.error(`❌ MongoDB connection attempt ${retryCount} failed: ${error.message}`);
+            
+            if (retryCount >= maxRetries) {
+                logger.error('❌ All MongoDB connection attempts failed');
+                logger.warn('⚠️ Continuing without MongoDB connection');
+                logger.warn('⚠️ Some features may not work until database is connected');
+                
+                // Set manager state to disconnected
+                if (this.dbManager) {
+                    this.dbManager.isConnected = false;
                 }
+                return;
             }
         }
     }
+}
 
-    async setupDatabase(db) {
-        // Enable WAL mode and optimizations
-        await this.runAsync(db, 'PRAGMA journal_mode=WAL');
-        await this.runAsync(db, 'PRAGMA synchronous=NORMAL');
-        await this.runAsync(db, 'PRAGMA cache_size=10000');
-        await this.runAsync(db, 'PRAGMA temp_store=memory');
-        await this.runAsync(db, 'PRAGMA foreign_keys=ON');
-        await this.runAsync(db, 'PRAGMA busy_timeout=30000'); // 30 second timeout
+cleanPhoneNumber(phone) {
+    if (!phone) return null;
 
-        // Create tables
-        await this.createTables(db);
-        await this.createIndexes(db);
-        await this.initializeGroups(db);
-    }
+    const digits = phone.replace(/\D/g, '');
 
-    runAsync(db, sql, params = []) {
-        return new Promise((resolve, reject) => {
-            db.run(sql, params, function(err) {
-                if (err) reject(err);
-                else resolve(this);
-            });
-        });
-    }
-
-    allAsync(db, sql, params = []) {
-        return new Promise((resolve, reject) => {
-            db.all(sql, params, (err, rows) => {
-                if (err) reject(err);
-                else resolve(rows);
-            });
-        });
-    }
-
-    getAsync(db, sql, params = []) {
-        return new Promise((resolve, reject) => {
-            db.get(sql, params, (err, row) => {
-                if (err) reject(err);
-                else resolve(row);
-            });
-        });
-    }
-
-    async createTables(db) {
-        const tables = [
-            // Groups table
-            `CREATE TABLE IF NOT EXISTS groups (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                description TEXT,
-                active BOOLEAN DEFAULT TRUE,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )`,
-
-            // Members table
-            `CREATE TABLE IF NOT EXISTS members (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                phone_number TEXT UNIQUE NOT NULL,
-                name TEXT NOT NULL,
-                is_admin BOOLEAN DEFAULT FALSE,
-                active BOOLEAN DEFAULT TRUE,
-                last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
-                message_count INTEGER DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )`,
-
-            // Group membership table
-            `CREATE TABLE IF NOT EXISTS group_members (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                group_id INTEGER NOT NULL,
-                member_id INTEGER NOT NULL,
-                joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
-                FOREIGN KEY (member_id) REFERENCES members (id) ON DELETE CASCADE,
-                UNIQUE(group_id, member_id)
-            )`,
-
-            // Messages table
-            `CREATE TABLE IF NOT EXISTS broadcast_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                from_phone TEXT NOT NULL,
-                from_name TEXT NOT NULL,
-                original_message TEXT NOT NULL,
-                processed_message TEXT NOT NULL,
-                message_type TEXT DEFAULT 'text',
-                has_media BOOLEAN DEFAULT FALSE,
-                media_count INTEGER DEFAULT 0,
-                large_media_count INTEGER DEFAULT 0,
-                processing_status TEXT DEFAULT 'completed',
-                delivery_status TEXT DEFAULT 'pending',
-                is_reaction BOOLEAN DEFAULT FALSE,
-                target_message_id INTEGER,
-                sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (target_message_id) REFERENCES broadcast_messages (id)
-            )`,
-
-            // Smart reaction tracking table
-            `CREATE TABLE IF NOT EXISTS message_reactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                target_message_id INTEGER NOT NULL,
-                reactor_phone TEXT NOT NULL,
-                reactor_name TEXT NOT NULL,
-                reaction_emoji TEXT NOT NULL,
-                reaction_text TEXT NOT NULL,
-                is_processed BOOLEAN DEFAULT FALSE,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (target_message_id) REFERENCES broadcast_messages (id) ON DELETE CASCADE
-            )`,
-
-            // Reaction summary tracking
-            `CREATE TABLE IF NOT EXISTS reaction_summaries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                summary_type TEXT NOT NULL,
-                summary_content TEXT NOT NULL,
-                sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                messages_included INTEGER DEFAULT 0
-            )`,
-
-            // Media files table
-            `CREATE TABLE IF NOT EXISTS media_files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id INTEGER NOT NULL,
-                original_url TEXT NOT NULL,
-                twilio_media_sid TEXT,
-                r2_object_key TEXT,
-                public_url TEXT,
-                clean_filename TEXT,
-                display_name TEXT,
-                original_size INTEGER,
-                final_size INTEGER,
-                mime_type TEXT,
-                file_hash TEXT,
-                compression_detected BOOLEAN DEFAULT FALSE,
-                upload_status TEXT DEFAULT 'pending',
-                upload_error TEXT,
-                access_count INTEGER DEFAULT 0,
-                last_accessed DATETIME,
-                expires_at DATETIME,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (message_id) REFERENCES broadcast_messages (id) ON DELETE CASCADE
-            )`,
-
-            // Delivery tracking table
-            `CREATE TABLE IF NOT EXISTS delivery_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id INTEGER NOT NULL,
-                member_id INTEGER NOT NULL,
-                to_phone TEXT NOT NULL,
-                delivery_method TEXT NOT NULL,
-                delivery_status TEXT DEFAULT 'pending',
-                twilio_message_sid TEXT,
-                error_code TEXT,
-                error_message TEXT,
-                delivery_time_ms INTEGER,
-                retry_count INTEGER DEFAULT 0,
-                delivered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (message_id) REFERENCES broadcast_messages (id) ON DELETE CASCADE,
-                FOREIGN KEY (member_id) REFERENCES members (id) ON DELETE CASCADE
-            )`,
-
-            // Analytics table
-            `CREATE TABLE IF NOT EXISTS system_analytics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                metric_name TEXT NOT NULL,
-                metric_value REAL NOT NULL,
-                metric_metadata TEXT,
-                recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )`,
-
-            // Performance monitoring table
-            `CREATE TABLE IF NOT EXISTS performance_metrics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                operation_type TEXT NOT NULL,
-                operation_duration_ms INTEGER NOT NULL,
-                success BOOLEAN DEFAULT TRUE,
-                error_details TEXT,
-                recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )`
-        ];
-
-        for (const tableSQL of tables) {
-            await this.runAsync(db, tableSQL);
-        }
-    }
-
-    async createIndexes(db) {
-        const indexes = [
-            'CREATE INDEX IF NOT EXISTS idx_members_phone ON members(phone_number)',
-            'CREATE INDEX IF NOT EXISTS idx_members_active ON members(active)',
-            'CREATE INDEX IF NOT EXISTS idx_messages_sent_at ON broadcast_messages(sent_at)',
-            'CREATE INDEX IF NOT EXISTS idx_messages_is_reaction ON broadcast_messages(is_reaction)',
-            'CREATE INDEX IF NOT EXISTS idx_messages_target ON broadcast_messages(target_message_id)',
-            'CREATE INDEX IF NOT EXISTS idx_reactions_target ON message_reactions(target_message_id)',
-            'CREATE INDEX IF NOT EXISTS idx_reactions_processed ON message_reactions(is_processed)',
-            'CREATE INDEX IF NOT EXISTS idx_reactions_created ON message_reactions(created_at)',
-            'CREATE INDEX IF NOT EXISTS idx_media_message_id ON media_files(message_id)',
-            'CREATE INDEX IF NOT EXISTS idx_media_status ON media_files(upload_status)',
-            'CREATE INDEX IF NOT EXISTS idx_delivery_message_id ON delivery_log(message_id)',
-            'CREATE INDEX IF NOT EXISTS idx_delivery_status ON delivery_log(delivery_status)',
-            'CREATE INDEX IF NOT EXISTS idx_analytics_metric ON system_analytics(metric_name, recorded_at)',
-            'CREATE INDEX IF NOT EXISTS idx_performance_type ON performance_metrics(operation_type, recorded_at)'
-        ];
-
-        for (const indexSQL of indexes) {
-            await this.runAsync(db, indexSQL);
-        }
-    }
-
-    async initializeGroups(db) {
-        const count = await this.getAsync(db, "SELECT COUNT(*) as count FROM groups");
-        
-        if (count.count === 0) {
-            const productionGroups = [
-                ["YesuWay Congregation", "Main congregation group"],
-                ["Church Leadership", "Leadership and admin group"],
-                ["Media Team", "Media and technology team"]
-            ];
-
-            for (const [name, description] of productionGroups) {
-                await this.runAsync(db, "INSERT INTO groups (name, description) VALUES (?, ?)", [name, description]);
-            }
-            logger.info("✅ Production groups initialized");
-        }
-    }
-
-    cleanPhoneNumber(phone) {
-        if (!phone) return null;
-        
-        const digits = phone.replace(/\D/g, '');
-        
         if (digits.length === 10) {
             return `+1${digits}`;
         } else if (digits.length === 11 && digits.startsWith('1')) {
@@ -542,12 +405,9 @@ class ProductionChurchSMS {
 
     async recordPerformanceMetric(operationType, durationMs, success = true, errorDetails = null) {
         try {
-            const db = new sqlite3.Database('production_church.db');
-            await this.runAsync(db, `
-                INSERT INTO performance_metrics (operation_type, operation_duration_ms, success, error_details) 
-                VALUES (?, ?, ?, ?)
-            `, [operationType, durationMs, success, errorDetails]);
-            db.close();
+            if (this.dbManager.isConnected) {
+                await this.dbManager.recordPerformanceMetric(operationType, durationMs, success, errorDetails);
+            }
         } catch (error) {
             logger.error(`❌ Performance metric recording failed: ${error.message}`);
         }
@@ -618,108 +478,24 @@ class ProductionChurchSMS {
         return null;
     }
 
-    async findTargetMessageForReaction(targetFragment, reactorPhone, hoursBack = 24) {
-        try {
-            const db = new sqlite3.Database('production_church.db');
-            const sinceTime = new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
-
-            const recentMessages = await this.allAsync(db, `
-                SELECT id, original_message, from_phone, from_name, sent_at
-                FROM broadcast_messages 
-                WHERE sent_at > ? 
-                AND from_phone != ?
-                AND is_reaction = 0
-                ORDER BY sent_at DESC
-                LIMIT 10
-            `, [sinceTime, reactorPhone]);
-
-            db.close();
-
-            if (recentMessages.length === 0) {
-                logger.info('🔍 No recent messages found for reaction matching');
-                return null;
-            }
-
-            // Smart matching algorithm
-            let bestMatch = null;
-            let bestScore = 0;
-
-            if (targetFragment) {
-                const targetWords = new Set(targetFragment.toLowerCase().split(/\s+/));
-
-                for (const msg of recentMessages) {
-                    if (!msg.original_message) continue;
-
-                    const messageWords = new Set(msg.original_message.toLowerCase().split(/\s+/));
-
-                    if (targetWords.size > 0 && messageWords.size > 0) {
-                        const commonWords = new Set([...targetWords].filter(x => messageWords.has(x)));
-                        let score = commonWords.size / Math.max(targetWords.size, messageWords.size);
-
-                        // Boost score for exact substring matches
-                        if (msg.original_message.toLowerCase().includes(targetFragment.toLowerCase())) {
-                            score += 0.5;
-                        }
-
-                        if (score > bestScore && score > 0.3) {
-                            bestScore = score;
-                            bestMatch = {
-                                id: msg.id,
-                                message: msg.original_message,
-                                fromPhone: msg.from_phone,
-                                fromName: msg.from_name,
-                                sentAt: msg.sent_at,
-                                similarityScore: score
-                            };
-                        }
-                    }
-                }
-            }
-
-            // Fallback to most recent message if no good match
-            if (!bestMatch && recentMessages.length > 0) {
-                const msg = recentMessages[0];
-                bestMatch = {
-                    id: msg.id,
-                    message: msg.original_message,
-                    fromPhone: msg.from_phone,
-                    fromName: msg.from_name,
-                    sentAt: msg.sent_at,
-                    similarityScore: 0.0
-                };
-                logger.info(`🎯 Using most recent message as fallback: Message ${msg.id}`);
-            }
-
-            if (bestMatch) {
-                logger.info(`✅ Found reaction target (score: ${bestMatch.similarityScore.toFixed(2)}): Message ${bestMatch.id} from ${bestMatch.fromName}`);
-            }
-
-            return bestMatch;
-        } catch (error) {
-            logger.error(`❌ Error finding reaction target: ${error.message}`);
-            return null;
-        }
-    }
-
     async getMemberInfo(phoneNumber) {
         try {
             phoneNumber = this.cleanPhoneNumber(phoneNumber);
-            const db = new sqlite3.Database('production_church.db');
+            
+            if (!this.dbManager.isConnected) {
+                logger.warn('❌ Database not connected - cannot get member info');
+                return null;
+            }
 
-            const result = await this.getAsync(db, `
-                SELECT id, name, is_admin, message_count 
-                FROM members 
-                WHERE phone_number = ? AND active = 1
-            `, [phoneNumber]);
+            const member = await this.dbManager.getMemberByPhone(phoneNumber);
 
-            db.close();
-
-            if (result) {
+            if (member) {
                 return {
-                    id: result.id,
-                    name: result.name,
-                    isAdmin: Boolean(result.is_admin),
-                    messageCount: result.message_count
+                    id: member._id.toString(),
+                    name: member.name,
+                    isAdmin: Boolean(member.isAdmin),
+                    messageCount: member.messageCount,
+                    groups: member.groups || []
                 };
             } else {
                 logger.warn(`❌ Unregistered number attempted access: ${phoneNumber}`);
@@ -733,35 +509,37 @@ class ProductionChurchSMS {
 
     async storeReactionSilently(reactorPhone, reactionData, targetMessage) {
         try {
+            if (!this.dbManager.isConnected) {
+                logger.warn('❌ Database not connected - cannot store reaction');
+                return false;
+            }
+
             const reactor = await this.getMemberInfo(reactorPhone);
             if (!reactor) {
                 logger.warn(`❌ Reaction from unregistered number: ${reactorPhone}`);
                 return false;
             }
 
-            const targetMsgId = targetMessage.id;
+            const targetMsgId = targetMessage._id;
             const reactionEmoji = reactionData.emoji;
             const reactionText = reactionData.fullPattern;
 
             logger.info(`🔇 Storing silent reaction: ${reactor.name} reacted '${reactionEmoji}' to message ${targetMsgId}`);
 
-            const db = new sqlite3.Database('production_church.db');
-
             // Store reaction silently
-            await this.runAsync(db, `
-                INSERT INTO message_reactions 
-                (target_message_id, reactor_phone, reactor_name, reaction_emoji, reaction_text, is_processed) 
-                VALUES (?, ?, ?, ?, ?, 0)
-            `, [targetMsgId, reactorPhone, reactor.name, reactionEmoji, reactionText]);
+            await this.dbManager.createReaction({
+                targetMessageId: targetMsgId,
+                reactorPhone: reactorPhone,
+                reactorName: reactor.name,
+                reactionEmoji: reactionEmoji,
+                reactionText: reactionText,
+                isProcessed: false
+            });
 
             // Mark original message to track it has reactions
-            await this.runAsync(db, `
-                UPDATE broadcast_messages 
-                SET message_type = 'text_with_reactions'
-                WHERE id = ?
-            `, [targetMsgId]);
-
-            db.close();
+            await this.dbManager.updateBroadcastMessage(targetMsgId, {
+                messageType: 'text_with_reactions'
+            });
 
             logger.info('✅ Reaction stored silently - no broadcast sent');
             return true;
@@ -796,22 +574,15 @@ class ProductionChurchSMS {
 
     async sendPauseReactionSummary() {
         try {
-            const sinceTime = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // Last 2 hours
-            const db = new sqlite3.Database('production_church.db');
+            if (!this.dbManager.isConnected) {
+                logger.warn('❌ Database not connected - cannot send pause summary');
+                return;
+            }
 
-            const reactionData = await this.allAsync(db, `
-                SELECT mr.target_message_id, bm.from_name, bm.original_message, 
-                       mr.reaction_emoji, COUNT(*) as reaction_count
-                FROM message_reactions mr
-                JOIN broadcast_messages bm ON mr.target_message_id = bm.id
-                WHERE mr.is_processed = 0 
-                AND mr.created_at > ?
-                GROUP BY mr.target_message_id, mr.reaction_emoji
-                ORDER BY bm.sent_at DESC
-            `, [sinceTime]);
+            const sinceTime = new Date(Date.now() - 2 * 60 * 60 * 1000); // Last 2 hours
+            const reactions = await this.dbManager.getUnprocessedReactions(sinceTime);
 
-            if (reactionData.length === 0) {
-                db.close();
+            if (reactions.length === 0) {
                 logger.info('🔇 No unprocessed reactions for pause summary');
                 return;
             }
@@ -822,16 +593,18 @@ class ProductionChurchSMS {
 
             // Group by message
             const messageReactions = {};
-            for (const row of reactionData) {
-                const { target_message_id, from_name, original_message, reaction_emoji, reaction_count } = row;
-                if (!messageReactions[target_message_id]) {
-                    messageReactions[target_message_id] = {
-                        fromName: from_name,
-                        message: original_message,
+            for (const reaction of reactions) {
+                const targetId = reaction.targetMessageId._id.toString();
+                if (!messageReactions[targetId]) {
+                    messageReactions[targetId] = {
+                        fromName: reaction.targetMessageId.fromName,
+                        message: reaction.targetMessageId.originalMessage,
                         reactions: {}
                     };
                 }
-                messageReactions[target_message_id].reactions[reaction_emoji] = reaction_count;
+                
+                const emoji = reaction.reactionEmoji;
+                messageReactions[targetId].reactions[emoji] = (messageReactions[targetId].reactions[emoji] || 0) + 1;
             }
 
             for (const [targetId, msgData] of Object.entries(messageReactions)) {
@@ -855,21 +628,15 @@ class ProductionChurchSMS {
             }
 
             // Mark all reactions as processed
-            await this.runAsync(db, `
-                UPDATE message_reactions 
-                SET is_processed = 1 
-                WHERE is_processed = 0 
-                AND created_at > ?
-            `, [sinceTime]);
+            await this.dbManager.markReactionsAsProcessed(sinceTime);
 
             // Store summary record
             const summaryContent = summaryLines.join('\n');
-            await this.runAsync(db, `
-                INSERT INTO reaction_summaries (summary_type, summary_content, messages_included) 
-                VALUES ('pause_summary', ?, ?)
-            `, [summaryContent, messagesIncluded]);
-
-            db.close();
+            await this.dbManager.createReactionSummary({
+                summaryType: 'pause_summary',
+                summaryContent: summaryContent,
+                messagesIncluded: messagesIncluded
+            });
 
             // Broadcast summary to congregation
             await this.broadcastSummaryToCongregation(summaryContent);
@@ -882,25 +649,17 @@ class ProductionChurchSMS {
 
     async sendDailyReactionSummary() {
         try {
+            if (!this.dbManager.isConnected) {
+                logger.warn('❌ Database not connected - cannot send daily summary');
+                return;
+            }
+
             const todayStart = new Date();
             todayStart.setHours(0, 0, 0, 0);
             
-            const db = new sqlite3.Database('production_church.db');
+            const reactions = await this.dbManager.getUnprocessedReactions(todayStart);
 
-            const reactionData = await this.allAsync(db, `
-                SELECT mr.target_message_id, bm.from_name, bm.original_message, 
-                       mr.reaction_emoji, COUNT(*) as reaction_count
-                FROM message_reactions mr
-                JOIN broadcast_messages bm ON mr.target_message_id = bm.id
-                WHERE mr.is_processed = 0 
-                AND mr.created_at >= ?
-                GROUP BY mr.target_message_id, mr.reaction_emoji
-                ORDER BY reaction_count DESC, bm.sent_at DESC
-                LIMIT 10
-            `, [todayStart.toISOString()]);
-
-            if (reactionData.length === 0) {
-                db.close();
+            if (reactions.length === 0) {
                 logger.info('🔇 No reactions for daily summary');
                 return;
             }
@@ -912,19 +671,22 @@ class ProductionChurchSMS {
 
             // Group by message
             const messageReactions = {};
-            for (const row of reactionData) {
-                const { target_message_id, from_name, original_message, reaction_emoji, reaction_count } = row;
-                totalReactions += reaction_count;
-                if (!messageReactions[target_message_id]) {
-                    messageReactions[target_message_id] = {
-                        fromName: from_name,
-                        message: original_message,
+            for (const reaction of reactions) {
+                const targetId = reaction.targetMessageId._id.toString();
+                totalReactions++;
+                
+                if (!messageReactions[targetId]) {
+                    messageReactions[targetId] = {
+                        fromName: reaction.targetMessageId.fromName,
+                        message: reaction.targetMessageId.originalMessage,
                         reactions: {},
                         totalCount: 0
                     };
                 }
-                messageReactions[target_message_id].reactions[reaction_emoji] = reaction_count;
-                messageReactions[target_message_id].totalCount += reaction_count;
+                
+                const emoji = reaction.reactionEmoji;
+                messageReactions[targetId].reactions[emoji] = (messageReactions[targetId].reactions[emoji] || 0) + 1;
+                messageReactions[targetId].totalCount++;
             }
 
             // Sort by total reaction count
@@ -953,32 +715,20 @@ class ProductionChurchSMS {
                 summaryLines.push(`• ${msgData.fromName}: "${messagePreview}" (${totalForMsg} reactions: ${reactionDisplay})`);
             }
 
-            // Add engagement stats
-            const uniqueReactors = await this.getAsync(db, `
-                SELECT COUNT(DISTINCT reactor_phone) as count
-                FROM message_reactions 
-                WHERE is_processed = 0 
-                AND created_at >= ?
-            `, [todayStart.toISOString()]);
-
-            summaryLines.push(`\n🎯 Today's engagement: ${totalReactions} reactions from ${uniqueReactors.count} members`);
+            // Add engagement stats - count unique reactors
+            const uniqueReactors = new Set(reactions.map(r => r.reactorPhone));
+            summaryLines.push(`\n🎯 Today's engagement: ${totalReactions} reactions from ${uniqueReactors.size} members`);
 
             // Mark all today's reactions as processed
-            await this.runAsync(db, `
-                UPDATE message_reactions 
-                SET is_processed = 1 
-                WHERE is_processed = 0 
-                AND created_at >= ?
-            `, [todayStart.toISOString()]);
+            await this.dbManager.markReactionsAsProcessed(todayStart);
 
             // Store summary record
             const summaryContent = summaryLines.join('\n');
-            await this.runAsync(db, `
-                INSERT INTO reaction_summaries (summary_type, summary_content, messages_included) 
-                VALUES ('daily_summary', ?, ?)
-            `, [summaryContent, messagesIncluded]);
-
-            db.close();
+            await this.dbManager.createReactionSummary({
+                summaryType: 'daily_summary',
+                summaryContent: summaryContent,
+                messagesIncluded: messagesIncluded
+            });
 
             // Broadcast summary to congregation
             await this.broadcastSummaryToCongregation(summaryContent);
@@ -1020,7 +770,6 @@ class ProductionChurchSMS {
             logger.error(`❌ Error broadcasting summary: ${error.message}`);
         }
     }
-
     async downloadMediaFromTwilio(mediaUrl) {
         const startTime = Date.now();
         try {
@@ -1197,19 +946,23 @@ class ProductionChurchSMS {
                 );
 
                 if (publicUrl) {
-                    const db = new sqlite3.Database('production_church.db');
-
-                    await this.runAsync(db, `
-                        INSERT INTO media_files 
-                        (message_id, original_url, r2_object_key, public_url, clean_filename, display_name,
-                         original_size, final_size, mime_type, file_hash, compression_detected, upload_status) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')
-                    `, [
-                        messageId, mediaUrl, cleanFilename, publicUrl, cleanFilename.split('/').pop(), displayName,
-                        fileSize, fileSize, mediaData.mimeType, mediaData.hash, compressionDetected
-                    ]);
-
-                    db.close();
+                    // Store media file record in MongoDB
+                    if (this.dbManager.isConnected) {
+                        await this.dbManager.createMediaFile({
+                            messageId: messageId,
+                            originalUrl: mediaUrl,
+                            r2ObjectKey: cleanFilename,
+                            publicUrl: publicUrl,
+                            cleanFilename: cleanFilename.split('/').pop(),
+                            displayName: displayName,
+                            originalSize: fileSize,
+                            finalSize: fileSize,
+                            mimeType: mediaData.mimeType,
+                            fileHash: mediaData.hash,
+                            compressionDetected: compressionDetected,
+                            uploadStatus: 'completed'
+                        });
+                    }
 
                     processedLinks.push({
                         url: publicUrl,
@@ -1235,43 +988,29 @@ class ProductionChurchSMS {
 
     async getAllActiveMembers(excludePhone = null) {
         try {
-            excludePhone = excludePhone ? this.cleanPhoneNumber(excludePhone) : null;
-
-            const db = new sqlite3.Database('production_church.db');
-
-            let query = `
-                SELECT DISTINCT m.id, m.phone_number, m.name, m.is_admin
-                FROM members m
-                JOIN group_members gm ON m.id = gm.member_id
-                WHERE m.active = 1
-            `;
-            const params = [];
-
-            if (excludePhone) {
-                query += " AND m.phone_number != ?";
-                params.push(excludePhone);
+            if (!this.dbManager.isConnected) {
+                logger.warn('❌ Database not connected - cannot get active members');
+                return [];
             }
 
-            query += " ORDER BY m.name";
+            excludePhone = excludePhone ? this.cleanPhoneNumber(excludePhone) : null;
+            const members = await this.dbManager.getAllActiveMembers(excludePhone);
 
-            const rows = await this.allAsync(db, query, params);
-            db.close();
-
-            const members = [];
-            for (const row of rows) {
-                const cleanPhone = this.cleanPhoneNumber(row.phone_number);
+            const cleanMembers = [];
+            for (const member of members) {
+                const cleanPhone = this.cleanPhoneNumber(member.phoneNumber);
                 if (cleanPhone) {
-                    members.push({
-                        id: row.id,
+                    cleanMembers.push({
+                        id: member._id.toString(),
                         phone: cleanPhone,
-                        name: row.name,
-                        isAdmin: Boolean(row.is_admin)
+                        name: member.name,
+                        isAdmin: Boolean(member.isAdmin)
                     });
                 }
             }
 
-            logger.info(`📋 Retrieved ${members.length} active members`);
-            return members;
+            logger.info(`📋 Retrieved ${cleanMembers.length} active members`);
+            return cleanMembers;
         } catch (error) {
             logger.error(`❌ Error retrieving members: ${error.message}`);
             return [];
@@ -1357,22 +1096,23 @@ class ProductionChurchSMS {
                 return "No active congregation members found for broadcast.";
             }
 
-            // Store broadcast message
-            const db = new sqlite3.Database('production_church.db');
-
-            const result = await this.runAsync(db, `
-                INSERT INTO broadcast_messages 
-                (from_phone, from_name, original_message, processed_message, message_type, 
-                 has_media, media_count, processing_status, delivery_status, is_reaction) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 'pending', 0)
-            `, [
-                fromPhone, sender.name, messageText, messageText,
-                mediaUrls ? 'media' : 'text',
-                Boolean(mediaUrls), mediaUrls ? mediaUrls.length : 0
-            ]);
-
-            const messageId = result.lastID;
-            db.close();
+            // Store broadcast message in MongoDB
+            let messageId = null;
+            if (this.dbManager.isConnected) {
+                const broadcastMessage = await this.dbManager.createBroadcastMessage({
+                    fromPhone: fromPhone,
+                    fromName: sender.name,
+                    originalMessage: messageText,
+                    processedMessage: messageText,
+                    messageType: mediaUrls ? 'media' : 'text',
+                    hasMedia: Boolean(mediaUrls),
+                    mediaCount: mediaUrls ? mediaUrls.length : 0,
+                    processingStatus: 'processing',
+                    deliveryStatus: 'pending',
+                    isReaction: false
+                });
+                messageId = broadcastMessage._id.toString();
+            }
 
             // Process media if present
             let cleanMediaLinks = [];
@@ -1395,13 +1135,13 @@ class ProductionChurchSMS {
             );
 
             // Update message with processed content
-            const db2 = new sqlite3.Database('production_church.db');
-            await this.runAsync(db2, `
-                UPDATE broadcast_messages 
-                SET processed_message = ?, large_media_count = ?, processing_status = 'completed'
-                WHERE id = ?
-            `, [finalMessage, largeMediaCount, messageId]);
-            db2.close();
+            if (this.dbManager.isConnected && messageId) {
+                await this.dbManager.updateBroadcastMessage(messageId, {
+                    processedMessage: finalMessage,
+                    largeMediaCount: largeMediaCount,
+                    processingStatus: 'completed'
+                });
+            }
 
             // Reset conversation pause timer for regular messages
             this.resetConversationPauseTimer();
@@ -1420,19 +1160,19 @@ class ProductionChurchSMS {
                     const result = await this.sendSMS(member.phone, finalMessage);
                     const deliveryTime = Date.now() - memberStart;
 
-                    // Log delivery
-                    const db3 = new sqlite3.Database('production_church.db');
-                    await this.runAsync(db3, `
-                        INSERT INTO delivery_log 
-                        (message_id, member_id, to_phone, delivery_method, delivery_status, 
-                         twilio_message_sid, error_message, delivery_time_ms) 
-                        VALUES (?, ?, ?, 'sms', ?, ?, ?, ?)
-                    `, [
-                        messageId, member.id, member.phone,
-                        result.success ? 'delivered' : 'failed',
-                        result.sid || null, result.error || null, deliveryTime
-                    ]);
-                    db3.close();
+                    // Log delivery in MongoDB
+                    if (this.dbManager.isConnected && messageId) {
+                        await this.dbManager.createDeliveryLog({
+                            messageId: messageId,
+                            memberId: member.id,
+                            toPhone: member.phone,
+                            deliveryMethod: 'sms',
+                            deliveryStatus: result.success ? 'delivered' : 'failed',
+                            twilioMessageSid: result.sid || null,
+                            errorMessage: result.error || null,
+                            deliveryTimeMs: deliveryTime
+                        });
+                    }
 
                     if (result.success) {
                         deliveryStats.sent++;
@@ -1457,29 +1197,19 @@ class ProductionChurchSMS {
             deliveryStats.totalTime = totalTime;
 
             // Update final delivery status
-            const db4 = new sqlite3.Database('production_church.db');
-            await this.runAsync(db4, `
-                UPDATE broadcast_messages 
-                SET delivery_status = 'completed'
-                WHERE id = ?
-            `, [messageId]);
+            if (this.dbManager.isConnected && messageId) {
+                await this.dbManager.updateBroadcastMessage(messageId, {
+                    deliveryStatus: 'completed'
+                });
 
-            // Record analytics
-            await this.runAsync(db4, `
-                INSERT INTO system_analytics (metric_name, metric_value, metric_metadata) 
-                VALUES (?, ?, ?)
-            `, ['broadcast_delivery_rate',
-                deliveryStats.sent / recipients.length * 100,
-                `sent:${deliveryStats.sent},failed:${deliveryStats.failed},time:${totalTime.toFixed(2)}s`]);
+                // Record analytics
+                await this.dbManager.recordAnalytic('broadcast_delivery_rate',
+                    deliveryStats.sent / recipients.length * 100,
+                    `sent:${deliveryStats.sent},failed:${deliveryStats.failed},time:${totalTime.toFixed(2)}s`);
 
-            // Update sender message count
-            await this.runAsync(db4, `
-                UPDATE members 
-                SET message_count = message_count + 1, last_activity = CURRENT_TIMESTAMP
-                WHERE phone_number = ?
-            `, [fromPhone]);
-
-            db4.close();
+                // Update sender message count
+                await this.dbManager.updateMemberActivity(fromPhone);
+            }
 
             // Record broadcast performance
             const broadcastDurationMs = Math.round(totalTime * 1000);
@@ -1509,16 +1239,15 @@ class ProductionChurchSMS {
             logger.error(`❌ Broadcast error: ${error.message}`);
 
             // Update message status to failed
-            try {
-                const db5 = new sqlite3.Database('production_church.db');
-                await this.runAsync(db5, `
-                    UPDATE broadcast_messages 
-                    SET delivery_status = 'failed', processing_status = 'error'
-                    WHERE id = ?
-                `, [messageId]);
-                db5.close();
-            } catch (dbError) {
-                // Ignore database errors during error handling
+            if (this.dbManager.isConnected && messageId) {
+                try {
+                    await this.dbManager.updateBroadcastMessage(messageId, {
+                        deliveryStatus: 'failed',
+                        processingStatus: 'error'
+                    });
+                } catch (dbError) {
+                    // Ignore database errors during error handling
+                }
             }
 
             return "Broadcast failed - system administrators notified";
@@ -1528,12 +1257,8 @@ class ProductionChurchSMS {
     async isAdmin(phoneNumber) {
         try {
             phoneNumber = this.cleanPhoneNumber(phoneNumber);
-
-            const db = new sqlite3.Database('production_church.db');
-            const result = await this.getAsync(db, "SELECT is_admin FROM members WHERE phone_number = ? AND active = 1", [phoneNumber]);
-            db.close();
-
-            return result ? Boolean(result.is_admin) : false;
+            const member = await this.getMemberInfo(phoneNumber);
+            return member ? member.isAdmin : false;
         } catch (error) {
             logger.error(`❌ Admin check error: ${error.message}`);
             return false;
@@ -1577,7 +1302,7 @@ class ProductionChurchSMS {
                 logger.info(`🔇 Silent reaction detected: ${member.name} reacted '${reactionData.emoji}'`);
 
                 // Find target message
-                const targetMessage = await this.findTargetMessageForReaction(
+                const targetMessage = await this.dbManager.findTargetMessageForReaction(
                     reactionData.targetMessageFragment,
                     fromPhone
                 );
@@ -1609,7 +1334,8 @@ class ProductionChurchSMS {
                     "✅ Smart reaction tracking (silent)\n\n" +
                     "📱 Text HELP for this message\n" +
                     "🔇 Reactions tracked silently - summaries at 8 PM daily\n" +
-                    "🏛️ Production system - serving 24/7"
+                    "🏛️ Production system - serving 24/7\n" +
+                    "🗄️ Powered by MongoDB for scalable performance"
                 );
             }
 
@@ -1624,11 +1350,11 @@ class ProductionChurchSMS {
 }
 
 // Initialize production system
-logger.info('STARTING: Initializing Production Church SMS System with Smart Reaction Tracking...');
+logger.info('STARTING: Initializing Production Church SMS System with MongoDB and Smart Reaction Tracking...');
 let smsSystem;
 try {
     smsSystem = new ProductionChurchSMS();
-    logger.info('SUCCESS: Production system with smart reaction tracking fully operational');
+    logger.info('SUCCESS: Production system with MongoDB and smart reaction tracking fully operational');
 } catch (error) {
     logger.error(`CRITICAL: Production system failed to initialize: ${error.message}`);
     if (!config.development) {
@@ -1640,54 +1366,102 @@ async function setupProductionCongregation() {
     logger.info('🔧 Setting up production congregation...');
 
     try {
-        const db = new sqlite3.Database('production_church.db');
+        if (!smsSystem.dbManager.isConnected) {
+            logger.warn('❌ Database not connected - skipping congregation setup');
+            return;
+        }
+
+        // Get groups for reference
+        const congregationGroup = await smsSystem.dbManager.getGroupByName("YesuWay Congregation");
+        const leadershipGroup = await smsSystem.dbManager.getGroupByName("Church Leadership");
+        const mediaGroup = await smsSystem.dbManager.getGroupByName("Media Team");
+
+        if (!congregationGroup || !leadershipGroup || !mediaGroup) {
+            logger.warn('❌ Required groups not found - run setup.js first');
+            return;
+        }
 
         // Add primary admin
-        await smsSystem.runAsync(db, `
-            INSERT OR REPLACE INTO members (phone_number, name, is_admin, active, message_count) 
-            VALUES (?, ?, ?, 1, 0)
-        `, ["+14257729189", "Church Admin", true]);
-
-        const adminResult = await smsSystem.getAsync(db, "SELECT id FROM members WHERE phone_number = ?", ["+14257729189"]);
-        const adminId = adminResult.id;
-
-        // Add to admin group
-        await smsSystem.runAsync(db, `
-            INSERT OR IGNORE INTO group_members (group_id, member_id) 
-            VALUES (2, ?)
-        `, [adminId]);
+        const adminPhone = smsSystem.cleanPhoneNumber("+14257729189");
+        let admin = await smsSystem.dbManager.getMemberByPhone(adminPhone);
+        
+        if (!admin) {
+            admin = await smsSystem.dbManager.createMember({
+                phoneNumber: adminPhone,
+                name: "Church Admin",
+                isAdmin: true,
+                active: true,
+                messageCount: 0,
+                groups: [{
+                    groupId: leadershipGroup._id,
+                    joinedAt: new Date()
+                }]
+            });
+            logger.info(`✅ Created admin: Church Admin (${adminPhone})`);
+        } else {
+            logger.info(`ℹ️ Admin already exists: ${admin.name}`);
+        }
 
         // Add production members
         const productionMembers = [
-            ["+12068001141", "Mike", 1],
-            ["+14257729189", "Sam", 1],
-            ["+12065910943", "Sami", 3],
-            ["+12064349652", "Yab", 1]
+            { phone: "+12068001141", name: "Mike", groupName: "YesuWay Congregation" },
+            { phone: "+14257729189", name: "Sam", groupName: "YesuWay Congregation" },
+            { phone: "+12065910943", name: "Sami", groupName: "Media Team" },
+            { phone: "+12064349652", name: "Yab", groupName: "YesuWay Congregation" }
         ];
 
-        for (const [phone, name, groupId] of productionMembers) {
-            await smsSystem.runAsync(db, `
-                INSERT OR REPLACE INTO members (phone_number, name, is_admin, active, message_count) 
-                VALUES (?, ?, ?, 1, 0)
-            `, [phone, name, false]);
+        for (const memberData of productionMembers) {
+            const cleanPhone = smsSystem.cleanPhoneNumber(memberData.phone);
+            let member = await smsSystem.dbManager.getMemberByPhone(cleanPhone);
+            
+            // Get target group
+            let targetGroup;
+            switch (memberData.groupName) {
+                case "YesuWay Congregation":
+                    targetGroup = congregationGroup;
+                    break;
+                case "Church Leadership":
+                    targetGroup = leadershipGroup;
+                    break;
+                case "Media Team":
+                    targetGroup = mediaGroup;
+                    break;
+                default:
+                    targetGroup = congregationGroup;
+            }
 
-            const memberResult = await smsSystem.getAsync(db, "SELECT id FROM members WHERE phone_number = ?", [phone]);
-            const memberId = memberResult.id;
-
-            await smsSystem.runAsync(db, `
-                INSERT OR IGNORE INTO group_members (group_id, member_id) 
-                VALUES (?, ?)
-            `, [groupId, memberId]);
+            if (!member) {
+                member = await smsSystem.dbManager.createMember({
+                    phoneNumber: cleanPhone,
+                    name: memberData.name,
+                    isAdmin: false,
+                    active: true,
+                    messageCount: 0,
+                    groups: [{
+                        groupId: targetGroup._id,
+                        joinedAt: new Date()
+                    }]
+                });
+                logger.info(`✅ Added member: ${memberData.name} (${cleanPhone}) to ${targetGroup.name}`);
+            } else {
+                // Check if member is already in the target group
+                const isInGroup = member.groups.some(g => g.groupId.toString() === targetGroup._id.toString());
+                if (!isInGroup) {
+                    await smsSystem.dbManager.addMemberToGroup(member._id, targetGroup._id);
+                    logger.info(`✅ Added existing member ${member.name} to ${targetGroup.name}`);
+                } else {
+                    logger.info(`ℹ️ Member ${member.name} already in ${targetGroup.name}`);
+                }
+            }
         }
 
-        db.close();
-        logger.info('✅ Production congregation setup completed with smart reaction tracking');
+        logger.info('✅ Production congregation setup completed with MongoDB');
     } catch (error) {
         logger.error(`❌ Production setup error: ${error.message}`);
     }
 }
 
-// ===== FLASK ROUTES =====
+// ===== EXPRESS ROUTES =====
 
 // Request monitoring middleware
 app.use((req, res, next) => {
@@ -1833,27 +1607,25 @@ app.get('/health', async (req, res) => {
         const healthData = {
             status: "healthy",
             timestamp: new Date().toISOString(),
-            version: "Production Church SMS System with Smart Reaction Tracking v3.0",
+            version: "Production Church SMS System with MongoDB and Smart Reaction Tracking v4.0",
             environment: "production"
         };
 
-        // Test database
-        const db = new sqlite3.Database('production_church.db');
-        
-        const memberCount = await smsSystem.getAsync(db, "SELECT COUNT(*) as count FROM members WHERE active = 1");
-        const recentMessages = await smsSystem.getAsync(db, "SELECT COUNT(*) as count FROM broadcast_messages WHERE sent_at > datetime('now', '-24 hours') AND is_reaction = 0");
-        const recentReactions = await smsSystem.getAsync(db, "SELECT COUNT(*) as count FROM message_reactions WHERE created_at > datetime('now', '-24 hours')");
-        const mediaCount = await smsSystem.getAsync(db, "SELECT COUNT(*) as count FROM media_files WHERE upload_status = 'completed'");
-        
-        db.close();
-
-        healthData.database = {
-            status: "connected",
-            active_members: memberCount.count,
-            recent_messages_24h: recentMessages.count,
-            recent_reactions_24h: recentReactions.count,
-            processed_media: mediaCount.count
-        };
+        // Test MongoDB
+        try {
+            if (smsSystem.dbManager.isConnected) {
+                const stats = await smsSystem.dbManager.getHealthStats();
+                healthData.mongodb = {
+                    status: "connected",
+                    connection: smsSystem.dbManager.getConnectionStatus(),
+                    ...stats
+                };
+            } else {
+                healthData.mongodb = { status: "disconnected" };
+            }
+        } catch (error) {
+            healthData.mongodb = { status: "error", error: error.message };
+        }
 
         // Test Twilio
         try {
@@ -1890,8 +1662,7 @@ app.get('/health', async (req, res) => {
             status: "active",
             silent_tracking: "enabled",
             daily_summary_time: "8:00 PM",
-            pause_summary_trigger: "30 minutes silence",
-            recent_reactions_24h: recentReactions.count
+            pause_summary_trigger: "30 minutes silence"
         };
 
         healthData.features = {
@@ -1899,6 +1670,7 @@ app.get('/health', async (req, res) => {
             manual_registration_only: "enabled",
             auto_registration: "disabled",
             smart_reaction_tracking: "enabled",
+            mongodb_storage: "enabled",
             admin_commands: "disabled"
         };
 
@@ -1912,30 +1684,32 @@ app.get('/health', async (req, res) => {
         });
     }
 });
-
 app.get('/', async (req, res) => {
     try {
-        const db = new sqlite3.Database('production_church.db');
+        let stats = {
+            activeMemberCount: 0,
+            recentMessages24h: 0,
+            recentReactions24h: 0,
+            processedMediaCount: 0
+        };
 
-        const memberCount = await smsSystem.getAsync(db, "SELECT COUNT(*) as count FROM members WHERE active = 1");
-        const messages24h = await smsSystem.getAsync(db, "SELECT COUNT(*) as count FROM broadcast_messages WHERE sent_at > datetime('now', '-24 hours') AND is_reaction = 0");
-        const reactions24h = await smsSystem.getAsync(db, "SELECT COUNT(*) as count FROM message_reactions WHERE created_at > datetime('now', '-24 hours')");
-        const mediaProcessed = await smsSystem.getAsync(db, "SELECT COUNT(*) as count FROM media_files WHERE upload_status = 'completed'");
-
-        db.close();
+        if (smsSystem.dbManager.isConnected) {
+            stats = await smsSystem.dbManager.getHealthStats();
+        }
 
         const homePageContent = `
 🏛️ YesuWay Church SMS Broadcasting System
 📅 Production Environment - ${new Date().toLocaleString()}
 
-🚀 PRODUCTION STATUS: SMART REACTION TRACKING ACTIVE
+🚀 PRODUCTION STATUS: MONGODB & SMART REACTION TRACKING ACTIVE
 
 📊 LIVE STATISTICS:
-✅ Registered Members: ${memberCount.count}
-✅ Messages (24h): ${messages24h.count}
-✅ Silent Reactions (24h): ${reactions24h.count}
-✅ Media Files Processed: ${mediaProcessed.count}
+✅ Registered Members: ${stats.activeMemberCount}
+✅ Messages (24h): ${stats.recentMessages24h}
+✅ Silent Reactions (24h): ${stats.recentReactions24h}
+✅ Media Files Processed: ${stats.processedMediaCount}
 ✅ Church Number: ${config.twilio.phoneNumber}
+✅ Database: MongoDB ${smsSystem.dbManager.isConnected ? 'Connected' : 'Disconnected'}
 
 🔇 SMART REACTION SYSTEM:
 ✅ SILENT TRACKING - No reaction spam to congregation
@@ -1944,10 +1718,17 @@ app.get('/', async (req, res) => {
 ✅ INDUSTRY PATTERNS - Detects all major reaction formats
 ✅ SMART MATCHING - Links reactions to correct messages
 
+🗄️ MONGODB FEATURES:
+✅ SCALABLE DOCUMENT STORAGE
+✅ Optimized indexes for performance
+✅ Automatic connection recovery
+✅ Real-time analytics and metrics
+✅ Transaction support for data integrity
+
 🛡️ SECURITY FEATURES:
 ✅ REGISTERED MEMBERS ONLY
 ✅ No auto-registration
-✅ Manual member management (database only)
+✅ Manual member management (MongoDB only)
 ✅ Unknown numbers rejected
 ✅ No SMS admin commands
 
@@ -1963,6 +1744,7 @@ app.get('/', async (req, res) => {
 ✅ Clean public links
 ✅ Professional broadcasting
 ✅ Comprehensive error handling
+✅ MongoDB analytics and reporting
 
 📱 MEMBER EXPERIENCE:
 • Only registered members can send
@@ -1978,7 +1760,7 @@ app.get('/', async (req, res) => {
 
 🎯 RESULT: Zero reaction spam + Full engagement tracking!
 
-💚 SERVING YOUR CONGREGATION 24/7 - SMART & SILENT
+💚 SERVING YOUR CONGREGATION 24/7 - SMART & SILENT WITH MONGODB
         `;
 
         res.set('Content-Type', 'text/plain; charset=utf-8');
@@ -2021,13 +1803,26 @@ app.all('/test', async (req, res) => {
                 timestamp: new Date().toISOString(),
                 processing: "async",
                 smart_reaction_system: "active",
-                admin_commands: "disabled"
+                admin_commands: "disabled",
+                database: smsSystem.dbManager.isConnected ? "MongoDB Connected" : "MongoDB Disconnected"
             });
         } else {
             res.json({
                 status: "✅ Test endpoint active",
                 method: "GET",
-                features: ["Clean media display", "Manual registration only", "Smart reaction tracking", "No admin commands"],
+                database: {
+                    type: "MongoDB",
+                    connected: smsSystem.dbManager.isConnected,
+                    status: smsSystem.dbManager.getConnectionStatus()
+                },
+                features: [
+                    "Clean media display", 
+                    "Manual registration only", 
+                    "Smart reaction tracking", 
+                    "No admin commands",
+                    "MongoDB storage",
+                    "Scalable performance"
+                ],
                 reaction_patterns: [
                     "Loved \"message text\"",
                     "Laughed at \"message text\"",
@@ -2052,59 +1847,62 @@ app.all('/test', async (req, res) => {
 // Add diagnostic endpoint for debugging
 app.get('/debug', async (req, res) => {
     try {
-        const db = new sqlite3.Database('production_church.db');
-        
+        if (!smsSystem.dbManager.isConnected) {
+            return res.status(503).json({
+                error: "Database not connected",
+                timestamp: new Date().toISOString(),
+                suggestion: "Check MongoDB connection status"
+            });
+        }
+
         // Get all members
-        const members = await smsSystem.allAsync(db, `
-            SELECT m.id, m.phone_number, m.name, m.is_admin, m.active,
-                   g.name as group_name
-            FROM members m
-            LEFT JOIN group_members gm ON m.id = gm.member_id
-            LEFT JOIN groups g ON gm.group_id = g.id
-            ORDER BY m.name
-        `);
+        const members = await smsSystem.dbManager.getAllActiveMembers();
         
         // Get recent messages
-        const recentMessages = await smsSystem.allAsync(db, `
-            SELECT id, from_phone, from_name, original_message, 
-                   delivery_status, sent_at
-            FROM broadcast_messages 
-            ORDER BY sent_at DESC 
-            LIMIT 5
-        `);
+        const recentMessages = await smsSystem.dbManager.getRecentMessages(24, false);
         
         // Get delivery stats
-        const deliveryStats = await smsSystem.allAsync(db, `
-            SELECT delivery_status, COUNT(*) as count
-            FROM delivery_log 
-            GROUP BY delivery_status
-        `);
+        const deliveryStats = await smsSystem.dbManager.getDeliveryStats();
         
-        db.close();
+        // Get health stats
+        const healthStats = await smsSystem.dbManager.getHealthStats();
         
         res.json({
             timestamp: new Date().toISOString(),
             system_status: {
                 twilio_connected: smsSystem.twilioClient !== null,
                 r2_connected: smsSystem.r2Client !== null,
-                database_ready: true
+                mongodb_connected: smsSystem.dbManager.isConnected,
+                database_connection: smsSystem.dbManager.getConnectionStatus()
             },
             congregation: {
                 total_members: members.length,
                 active_members: members.filter(m => m.active).length,
-                admin_members: members.filter(m => m.is_admin).length,
-                members: members
+                admin_members: members.filter(m => m.isAdmin).length,
+                members: members.map(m => ({
+                    name: m.name,
+                    phone: m.phoneNumber,
+                    isAdmin: m.isAdmin,
+                    groups: m.groups.map(g => g.groupId.name || 'Unknown Group')
+                }))
             },
             recent_activity: {
-                recent_messages: recentMessages,
-                delivery_statistics: deliveryStats
+                recent_messages: recentMessages.map(m => ({
+                    from: m.fromName,
+                    message: m.originalMessage.substring(0, 100),
+                    sentAt: m.sentAt,
+                    hasMedia: m.hasMedia
+                })),
+                delivery_statistics: deliveryStats,
+                health_stats: healthStats
             },
             troubleshooting: {
                 common_issues: [
-                    "Members not in database",
+                    "Members not in MongoDB database",
                     "Phone numbers not properly formatted", 
                     "Twilio credentials not working",
-                    "Messages being rejected as reactions"
+                    "Messages being rejected as reactions",
+                    "MongoDB connection issues"
                 ]
             }
         });
@@ -2114,7 +1912,7 @@ app.get('/debug', async (req, res) => {
         res.status(500).json({ 
             error: error.message,
             timestamp: new Date().toISOString(),
-            suggestion: "Database may not be initialized. Try /setup endpoint."
+            suggestion: "Database may not be connected. Check MongoDB status and try /setup endpoint."
         });
     }
 });
@@ -2124,39 +1922,21 @@ app.post('/setup', async (req, res) => {
     try {
         logger.info('🔧 Manual database setup/recovery initiated...');
         
-        // Force close any existing database connections
-        const fs = require('fs');
-        const dbPath = 'production_church.db';
-        
-        // Create new database with force flag
-        const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
-            if (err) {
-                logger.error('Database creation error:', err);
-            } else {
-                logger.info('Database file created/opened successfully');
-            }
-        });
-        
-        // Set pragmas for better concurrency
-        await smsSystem.runAsync(db, 'PRAGMA busy_timeout=30000');
-        await smsSystem.runAsync(db, 'PRAGMA journal_mode=WAL');
-        await smsSystem.runAsync(db, 'PRAGMA synchronous=NORMAL');
-        
-        // Create all tables
-        await smsSystem.createTables(db);
-        await smsSystem.createIndexes(db);
-        await smsSystem.initializeGroups(db);
-        
-        db.close();
-        
-        // Setup congregation
+        if (!smsSystem.dbManager.isConnected) {
+            return res.status(503).json({
+                status: "❌ Setup failed",
+                error: "MongoDB not connected",
+                timestamp: new Date().toISOString(),
+                suggestion: "Check MongoDB connection and try again"
+            });
+        }
+
+        // Setup production congregation
         await setupProductionCongregation();
         
         // Verify setup
-        const verifyDb = new sqlite3.Database('production_church.db');
-        const memberCount = await smsSystem.getAsync(verifyDb, "SELECT COUNT(*) as count FROM members WHERE active = 1");
-        const groupCount = await smsSystem.getAsync(verifyDb, "SELECT COUNT(*) as count FROM groups");
-        verifyDb.close();
+        const stats = await smsSystem.dbManager.getHealthStats();
+        const groups = await smsSystem.dbManager.getAllGroups();
         
         logger.info('✅ Manual setup completed successfully');
         
@@ -2164,9 +1944,10 @@ app.post('/setup', async (req, res) => {
             status: "✅ Database setup completed",
             timestamp: new Date().toISOString(),
             results: {
-                groups_created: groupCount.count,
-                members_added: memberCount.count,
-                database_initialized: true
+                groups_available: groups.length,
+                members_active: stats.activeMemberCount,
+                database_connected: smsSystem.dbManager.isConnected,
+                connection_status: smsSystem.dbManager.getConnectionStatus()
             },
             next_steps: [
                 "Test sending a message to your church number",
@@ -2186,65 +1967,62 @@ app.post('/setup', async (req, res) => {
     }
 });
 
-// Add database reset endpoint for emergencies
-app.post('/reset-database', async (req, res) => {
+// Add analytics endpoint
+app.get('/analytics', async (req, res) => {
     try {
-        logger.warn('🚨 EMERGENCY: Database reset initiated...');
-        
-        const fs = require('fs');
-        const dbPath = 'production_church.db';
-        
-        // Remove existing database files
-        try {
-            if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
-            if (fs.existsSync(dbPath + '-shm')) fs.unlinkSync(dbPath + '-shm');
-            if (fs.existsSync(dbPath + '-wal')) fs.unlinkSync(dbPath + '-wal');
-            logger.info('🗑️ Old database files removed');
-        } catch (removeError) {
-            logger.warn('Warning removing old files:', removeError.message);
+        if (!smsSystem.dbManager.isConnected) {
+            return res.status(503).json({
+                error: "Database not connected",
+                timestamp: new Date().toISOString()
+            });
         }
+
+        const healthStats = await smsSystem.dbManager.getHealthStats();
+        const deliveryStats = await smsSystem.dbManager.getDeliveryStats();
         
-        // Create fresh database
-        const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE);
-        
-        // Set pragmas
-        await smsSystem.runAsync(db, 'PRAGMA journal_mode=WAL');
-        await smsSystem.runAsync(db, 'PRAGMA synchronous=NORMAL');
-        await smsSystem.runAsync(db, 'PRAGMA busy_timeout=30000');
-        
-        // Create all tables
-        await smsSystem.createTables(db);
-        await smsSystem.createIndexes(db);
-        await smsSystem.initializeGroups(db);
-        
-        db.close();
-        
-        // Setup congregation
-        await setupProductionCongregation();
-        
-        // Verify
-        const verifyDb = new sqlite3.Database(dbPath);
-        const memberCount = await smsSystem.getAsync(verifyDb, "SELECT COUNT(*) as count FROM members WHERE active = 1");
-        const groupCount = await smsSystem.getAsync(verifyDb, "SELECT COUNT(*) as count FROM groups");
-        verifyDb.close();
-        
-        logger.info('✅ Database reset and setup completed');
-        
+        // Get recent performance metrics
+        const performanceData = await PerformanceMetrics.find({
+            recordedAt: { 
+                $gt: new Date(Date.now() - 24 * 60 * 60 * 1000) 
+            }
+        }).sort({ recordedAt: -1 }).limit(100);
+
+        // Get recent analytics
+        const analyticsData = await SystemAnalytics.find({
+            recordedAt: { 
+                $gt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) 
+            }
+        }).sort({ recordedAt: -1 }).limit(50);
+
         res.json({
-            status: "✅ Database reset and setup completed",
             timestamp: new Date().toISOString(),
-            results: {
-                groups_created: groupCount.count,
-                members_added: memberCount.count,
-                database_freshly_created: true
+            health_stats: healthStats,
+            delivery_stats: deliveryStats,
+            performance_metrics: {
+                total_entries: performanceData.length,
+                operations: performanceData.reduce((acc, metric) => {
+                    acc[metric.operationType] = (acc[metric.operationType] || 0) + 1;
+                    return acc;
+                }, {}),
+                average_durations: performanceData.reduce((acc, metric) => {
+                    if (!acc[metric.operationType]) {
+                        acc[metric.operationType] = [];
+                    }
+                    acc[metric.operationType].push(metric.operationDurationMs);
+                    return acc;
+                }, {})
             },
-            warning: "All previous data was deleted and recreated"
+            system_analytics: analyticsData.map(a => ({
+                metric: a.metricName,
+                value: a.metricValue,
+                metadata: a.metricMetadata,
+                recorded: a.recordedAt
+            }))
         });
-        
+
     } catch (error) {
-        logger.error(`❌ Database reset failed: ${error.message}`);
+        logger.error(`❌ Analytics endpoint error: ${error.message}`);
         res.status(500).json({
-            status: "❌ Reset failed",
             error: error.message,
             timestamp: new Date().toISOString()
         });
@@ -2256,7 +2034,8 @@ app.use((req, res) => {
     res.status(404).json({
         error: "Endpoint not found",
         status: "production",
-        available_endpoints: ["/", "/health", "/webhook/sms", "/test"]
+        database: "MongoDB",
+        available_endpoints: ["/", "/health", "/webhook/sms", "/test", "/debug", "/analytics"]
     });
 });
 
@@ -2264,24 +2043,31 @@ app.use((error, req, res, next) => {
     logger.error(`❌ Internal server error: ${error.message}`);
     res.status(500).json({
         error: "Internal server error",
-        status: "production"
+        status: "production",
+        database: "MongoDB"
     });
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
     logger.info('SIGTERM received, shutting down gracefully');
+    if (smsSystem.dbManager.isConnected) {
+        await smsSystem.dbManager.disconnect();
+    }
     process.exit(0);
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
     logger.info('SIGINT received, shutting down gracefully');
+    if (smsSystem.dbManager.isConnected) {
+        await smsSystem.dbManager.disconnect();
+    }
     process.exit(0);
 });
 
 // Start the server with enhanced error handling
 async function startServer() {
-    logger.info('STARTING: Production Church SMS System with Smart Reaction Tracking...');
+    logger.info('STARTING: Production Church SMS System with MongoDB and Smart Reaction Tracking...');
     logger.info('INFO: Professional church communication platform');
     logger.info('INFO: Clean media presentation enabled');
     logger.info('INFO: Manual registration only - secure access');
@@ -2290,6 +2076,7 @@ async function startServer() {
     logger.info('INFO: Pause summaries after 30min silence');
     logger.info('INFO: Auto-registration disabled');
     logger.info('INFO: SMS admin commands disabled');
+    logger.info('INFO: MongoDB database for scalable performance');
 
     // Environment validation (non-blocking in production)
     const validationWarnings = [];
@@ -2302,12 +2089,24 @@ async function startServer() {
         validationWarnings.push('R2 credentials not configured - media storage will use local fallback');
     }
 
+    if (!config.mongodb.uri && config.mongodb.host === 'localhost') {
+        validationWarnings.push('MongoDB credentials not configured - using localhost defaults');
+    }
+
     // Log warnings but continue startup
     if (validationWarnings.length > 0) {
         logger.warn('⚠️ CONFIGURATION WARNINGS:');
         validationWarnings.forEach(warning => logger.warn(`   • ${warning}`));
         logger.info('');
         logger.info('💡 TO FIX: Set environment variables for production use:');
+        logger.info('   • MongoDB Configuration:');
+        logger.info('     MONGODB_URI=mongodb://username:password@host:port/database');
+        logger.info('     OR individual components:');
+        logger.info('     MONGODB_HOST=your-mongodb-host');
+        logger.info('     MONGODB_PORT=27017');
+        logger.info('     MONGODB_DATABASE=yesuway_church');
+        logger.info('     MONGODB_USERNAME=your_username');
+        logger.info('     MONGODB_PASSWORD=your_password');
         logger.info('   • TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
         logger.info('   • TWILIO_AUTH_TOKEN=your_auth_token');
         logger.info('   • TWILIO_PHONE_NUMBER=+1234567890');
@@ -2330,32 +2129,38 @@ async function startServer() {
     logger.info('INFO: Health monitoring: /health');
     logger.info('INFO: System overview: /');
     logger.info('INFO: Test endpoint: /test');
+    logger.info('INFO: Debug endpoint: /debug');
+    logger.info('INFO: Analytics endpoint: /analytics');
     logger.info('INFO: Enterprise-grade system active');
     logger.info('INFO: Clean media display enabled');
-    logger.info('INFO: Secure member registration (database only)');
+    logger.info('INFO: Secure member registration (MongoDB only)');
     logger.info('INFO: Smart reaction tracking active');
     logger.info('INFO: Reaction summaries: Daily 8 PM + 30min pause');
     logger.info('INFO: Admin commands completely removed');
     logger.info('INFO: Serving YesuWay Church congregation');
+    logger.info('INFO: MongoDB database for scalable performance');
 
     // Start server
     const server = app.listen(config.port, '0.0.0.0', () => {
         logger.info(`🚀 Production Church SMS System running on port ${config.port}`);
         
-        if (smsSystem.twilioClient && smsSystem.r2Client) {
+        if (smsSystem.twilioClient && smsSystem.r2Client && smsSystem.dbManager.isConnected) {
             logger.info('💚 FULLY OPERATIONAL: All services connected and ready');
         } else {
             logger.info('🛠️ PARTIAL OPERATION: Some services in mock mode');
             logger.info('   Set production credentials to enable full functionality');
         }
         
-        logger.info('💚 SERVING YOUR CONGREGATION 24/7 - SMART & RESILIENT');
+        logger.info('💚 SERVING YOUR CONGREGATION 24/7 - SMART & RESILIENT WITH MONGODB');
     });
 
     // Graceful shutdown handling
-    const gracefulShutdown = (signal) => {
+    const gracefulShutdown = async (signal) => {
         logger.info(`${signal} received, shutting down gracefully`);
-        server.close(() => {
+        server.close(async () => {
+            if (smsSystem.dbManager.isConnected) {
+                await smsSystem.dbManager.disconnect();
+            }
             logger.info('Server closed successfully');
             process.exit(0);
         });
@@ -2390,10 +2195,8 @@ async function startServer() {
 // Initialize and start with robust error handling
 (async () => {
     try {
-        // Initialize SMS system
-        logger.info('STARTING: Initializing Production Church SMS System with Smart Reaction Tracking...');
-        smsSystem = new ProductionChurchSMS();
-        logger.info('SUCCESS: Production system with smart reaction tracking initialized');
+        // SMS system is already initialized above
+        logger.info('SUCCESS: Production system with MongoDB and smart reaction tracking initialized');
         
         // Start server
         await startServer();

@@ -1,264 +1,70 @@
 #!/usr/bin/env node
 
 /**
- * YesuWay Church SMS System - Database Setup Script
+ * YesuWay Church SMS System - MongoDB Setup Script
  * 
- * This script initializes the database and sets up the production congregation.
+ * This script initializes the MongoDB database and sets up the production congregation.
  * Run this script once before deploying to production.
  * 
  * Usage: node setup.js
  */
 
-const sqlite3 = require('sqlite3').verbose();
-const fs = require('fs');
-const path = require('path');
+const mongoose = require('mongoose');
+const MongoDBManager = require('./database');
+const {
+    Group,
+    Member,
+    BroadcastMessage,
+    MessageReaction,
+    ReactionSummary,
+    MediaFile,
+    DeliveryLog,
+    SystemAnalytics,
+    PerformanceMetrics
+} = require('./models');
 
 // Load environment variables
 require('dotenv').config();
 
-console.log('🏛️ YesuWay Church SMS System - Database Setup');
-console.log('==================================================');
+console.log('🏛️ YesuWay Church SMS System - MongoDB Setup');
+console.log('================================================');
 
-class DatabaseSetup {
+class MongoDBSetup {
     constructor() {
-        this.dbPath = 'production_church.db';
+        this.dbManager = new MongoDBManager(console);
+        this.connectionString = this.buildConnectionString();
     }
 
-    runAsync(db, sql, params = []) {
-        return new Promise((resolve, reject) => {
-            db.run(sql, params, function(err) {
-                if (err) reject(err);
-                else resolve(this);
-            });
-        });
-    }
+    buildConnectionString() {
+        const {
+            MONGODB_URI,
+            MONGODB_HOST = 'localhost',
+            MONGODB_PORT = '27017',
+            MONGODB_DATABASE = 'yesuway_church',
+            MONGODB_USERNAME,
+            MONGODB_PASSWORD,
+            MONGODB_AUTH_SOURCE = 'admin'
+        } = process.env;
 
-    allAsync(db, sql, params = []) {
-        return new Promise((resolve, reject) => {
-            db.all(sql, params, (err, rows) => {
-                if (err) reject(err);
-                else resolve(rows);
-            });
-        });
-    }
+        // If MONGODB_URI is provided, use it directly
+        if (MONGODB_URI) {
+            return MONGODB_URI;
+        }
 
-    getAsync(db, sql, params = []) {
-        return new Promise((resolve, reject) => {
-            db.get(sql, params, (err, row) => {
-                if (err) reject(err);
-                else resolve(row);
-            });
-        });
-    }
-
-    async setupDatabase() {
-        console.log('📋 Step 1: Creating database and tables...');
+        // Build connection string from components
+        let connectionString = 'mongodb://';
         
-        const db = new sqlite3.Database(this.dbPath);
+        if (MONGODB_USERNAME && MONGODB_PASSWORD) {
+            connectionString += `${encodeURIComponent(MONGODB_USERNAME)}:${encodeURIComponent(MONGODB_PASSWORD)}@`;
+        }
         
-        try {
-            // Enable WAL mode and optimizations
-            await this.runAsync(db, 'PRAGMA journal_mode=WAL');
-            await this.runAsync(db, 'PRAGMA synchronous=NORMAL');
-            await this.runAsync(db, 'PRAGMA cache_size=10000');
-            await this.runAsync(db, 'PRAGMA temp_store=memory');
-            await this.runAsync(db, 'PRAGMA foreign_keys=ON');
-
-            // Create all tables
-            await this.createTables(db);
-            await this.createIndexes(db);
-            await this.initializeGroups(db);
-
-            console.log('✅ Database structure created successfully');
-        } finally {
-            db.close();
-        }
-    }
-
-    async createTables(db) {
-        const tables = [
-            // Groups table
-            `CREATE TABLE IF NOT EXISTS groups (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                description TEXT,
-                active BOOLEAN DEFAULT TRUE,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )`,
-
-            // Members table
-            `CREATE TABLE IF NOT EXISTS members (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                phone_number TEXT UNIQUE NOT NULL,
-                name TEXT NOT NULL,
-                is_admin BOOLEAN DEFAULT FALSE,
-                active BOOLEAN DEFAULT TRUE,
-                last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
-                message_count INTEGER DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )`,
-
-            // Group membership table
-            `CREATE TABLE IF NOT EXISTS group_members (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                group_id INTEGER NOT NULL,
-                member_id INTEGER NOT NULL,
-                joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
-                FOREIGN KEY (member_id) REFERENCES members (id) ON DELETE CASCADE,
-                UNIQUE(group_id, member_id)
-            )`,
-
-            // Messages table
-            `CREATE TABLE IF NOT EXISTS broadcast_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                from_phone TEXT NOT NULL,
-                from_name TEXT NOT NULL,
-                original_message TEXT NOT NULL,
-                processed_message TEXT NOT NULL,
-                message_type TEXT DEFAULT 'text',
-                has_media BOOLEAN DEFAULT FALSE,
-                media_count INTEGER DEFAULT 0,
-                large_media_count INTEGER DEFAULT 0,
-                processing_status TEXT DEFAULT 'completed',
-                delivery_status TEXT DEFAULT 'pending',
-                is_reaction BOOLEAN DEFAULT FALSE,
-                target_message_id INTEGER,
-                sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (target_message_id) REFERENCES broadcast_messages (id)
-            )`,
-
-            // Smart reaction tracking table
-            `CREATE TABLE IF NOT EXISTS message_reactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                target_message_id INTEGER NOT NULL,
-                reactor_phone TEXT NOT NULL,
-                reactor_name TEXT NOT NULL,
-                reaction_emoji TEXT NOT NULL,
-                reaction_text TEXT NOT NULL,
-                is_processed BOOLEAN DEFAULT FALSE,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (target_message_id) REFERENCES broadcast_messages (id) ON DELETE CASCADE
-            )`,
-
-            // Reaction summary tracking
-            `CREATE TABLE IF NOT EXISTS reaction_summaries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                summary_type TEXT NOT NULL,
-                summary_content TEXT NOT NULL,
-                sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                messages_included INTEGER DEFAULT 0
-            )`,
-
-            // Media files table
-            `CREATE TABLE IF NOT EXISTS media_files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id INTEGER NOT NULL,
-                original_url TEXT NOT NULL,
-                twilio_media_sid TEXT,
-                r2_object_key TEXT,
-                public_url TEXT,
-                clean_filename TEXT,
-                display_name TEXT,
-                original_size INTEGER,
-                final_size INTEGER,
-                mime_type TEXT,
-                file_hash TEXT,
-                compression_detected BOOLEAN DEFAULT FALSE,
-                upload_status TEXT DEFAULT 'pending',
-                upload_error TEXT,
-                access_count INTEGER DEFAULT 0,
-                last_accessed DATETIME,
-                expires_at DATETIME,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (message_id) REFERENCES broadcast_messages (id) ON DELETE CASCADE
-            )`,
-
-            // Delivery tracking table
-            `CREATE TABLE IF NOT EXISTS delivery_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id INTEGER NOT NULL,
-                member_id INTEGER NOT NULL,
-                to_phone TEXT NOT NULL,
-                delivery_method TEXT NOT NULL,
-                delivery_status TEXT DEFAULT 'pending',
-                twilio_message_sid TEXT,
-                error_code TEXT,
-                error_message TEXT,
-                delivery_time_ms INTEGER,
-                retry_count INTEGER DEFAULT 0,
-                delivered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (message_id) REFERENCES broadcast_messages (id) ON DELETE CASCADE,
-                FOREIGN KEY (member_id) REFERENCES members (id) ON DELETE CASCADE
-            )`,
-
-            // Analytics table
-            `CREATE TABLE IF NOT EXISTS system_analytics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                metric_name TEXT NOT NULL,
-                metric_value REAL NOT NULL,
-                metric_metadata TEXT,
-                recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )`,
-
-            // Performance monitoring table
-            `CREATE TABLE IF NOT EXISTS performance_metrics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                operation_type TEXT NOT NULL,
-                operation_duration_ms INTEGER NOT NULL,
-                success BOOLEAN DEFAULT TRUE,
-                error_details TEXT,
-                recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )`
-        ];
-
-        for (const tableSQL of tables) {
-            await this.runAsync(db, tableSQL);
-        }
-    }
-
-    async createIndexes(db) {
-        const indexes = [
-            'CREATE INDEX IF NOT EXISTS idx_members_phone ON members(phone_number)',
-            'CREATE INDEX IF NOT EXISTS idx_members_active ON members(active)',
-            'CREATE INDEX IF NOT EXISTS idx_messages_sent_at ON broadcast_messages(sent_at)',
-            'CREATE INDEX IF NOT EXISTS idx_messages_is_reaction ON broadcast_messages(is_reaction)',
-            'CREATE INDEX IF NOT EXISTS idx_messages_target ON broadcast_messages(target_message_id)',
-            'CREATE INDEX IF NOT EXISTS idx_reactions_target ON message_reactions(target_message_id)',
-            'CREATE INDEX IF NOT EXISTS idx_reactions_processed ON message_reactions(is_processed)',
-            'CREATE INDEX IF NOT EXISTS idx_reactions_created ON message_reactions(created_at)',
-            'CREATE INDEX IF NOT EXISTS idx_media_message_id ON media_files(message_id)',
-            'CREATE INDEX IF NOT EXISTS idx_media_status ON media_files(upload_status)',
-            'CREATE INDEX IF NOT EXISTS idx_delivery_message_id ON delivery_log(message_id)',
-            'CREATE INDEX IF NOT EXISTS idx_delivery_status ON delivery_log(delivery_status)',
-            'CREATE INDEX IF NOT EXISTS idx_analytics_metric ON system_analytics(metric_name, recorded_at)',
-            'CREATE INDEX IF NOT EXISTS idx_performance_type ON performance_metrics(operation_type, recorded_at)'
-        ];
-
-        for (const indexSQL of indexes) {
-            await this.runAsync(db, indexSQL);
-        }
-    }
-
-    async initializeGroups(db) {
-        const count = await this.getAsync(db, "SELECT COUNT(*) as count FROM groups");
+        connectionString += `${MONGODB_HOST}:${MONGODB_PORT}/${MONGODB_DATABASE}`;
         
-        if (count.count === 0) {
-            const productionGroups = [
-                ["YesuWay Congregation", "Main congregation group"],
-                ["Church Leadership", "Leadership and admin group"],
-                ["Media Team", "Media and technology team"]
-            ];
-
-            for (const [name, description] of productionGroups) {
-                await this.runAsync(db, "INSERT INTO groups (name, description) VALUES (?, ?)", [name, description]);
-            }
-            console.log('✅ Production groups initialized');
-        } else {
-            console.log('ℹ️ Groups already exist, skipping initialization');
+        if (MONGODB_USERNAME && MONGODB_PASSWORD) {
+            connectionString += `?authSource=${MONGODB_AUTH_SOURCE}`;
         }
+
+        return connectionString;
     }
 
     cleanPhoneNumber(phone) {
@@ -278,76 +84,241 @@ class DatabaseSetup {
         }
     }
 
-    async setupProductionCongregation() {
-        console.log('📋 Step 2: Setting up production congregation...');
-        
-        const db = new sqlite3.Database(this.dbPath);
+    async connectToDatabase() {
+        console.log('📋 Step 1: Connecting to MongoDB...');
         
         try {
-            // Add primary admin
-            await this.runAsync(db, `
-                INSERT OR REPLACE INTO members (phone_number, name, is_admin, active, message_count) 
-                VALUES (?, ?, ?, 1, 0)
-            `, ["+14257729189", "Church Admin", true]);
+            const options = {
+                maxPoolSize: 10,
+                serverSelectionTimeoutMS: 5000,
+                socketTimeoutMS: 45000,
+                bufferCommands: false,
+                bufferMaxEntries: 0
+            };
 
-            const adminResult = await this.getAsync(db, "SELECT id FROM members WHERE phone_number = ?", ["+14257729189"]);
-            if (!adminResult) {
-                throw new Error("Failed to create admin user");
+            await this.dbManager.connect(this.connectionString, options);
+            console.log('✅ MongoDB connection established successfully');
+            
+        } catch (error) {
+            console.error('❌ Failed to connect to MongoDB:', error.message);
+            console.log('\n🔧 Troubleshooting:');
+            console.log('   • Ensure MongoDB is running');
+            console.log('   • Check connection string format');
+            console.log('   • Verify username/password if using authentication');
+            console.log('   • Ensure network connectivity to MongoDB server');
+            throw error;
+        }
+    }
+
+    async setupCollections() {
+        console.log('📋 Step 2: Setting up collections and indexes...');
+        
+        try {
+            // MongoDB will automatically create collections when documents are inserted
+            // But we can ensure indexes are created properly
+            await this.createIndexes();
+            console.log('✅ Collections and indexes configured successfully');
+            
+        } catch (error) {
+            console.error('❌ Failed to setup collections:', error.message);
+            throw error;
+        }
+    }
+
+    async createIndexes() {
+        try {
+            // Create indexes for optimal performance
+            const indexOperations = [
+                // Member indexes
+                Member.createIndexes([
+                    { phoneNumber: 1 },
+                    { active: 1, phoneNumber: 1 },
+                    { 'groups.groupId': 1 }
+                ]),
+                
+                // Group indexes
+                Group.createIndexes([
+                    { active: 1, name: 1 }
+                ]),
+                
+                // BroadcastMessage indexes
+                BroadcastMessage.createIndexes([
+                    { sentAt: -1, isReaction: 1 },
+                    { fromPhone: 1, sentAt: -1 },
+                    { targetMessageId: 1 }
+                ]),
+                
+                // MessageReaction indexes
+                MessageReaction.createIndexes([
+                    { targetMessageId: 1, isProcessed: 1 },
+                    { createdAt: -1 }
+                ]),
+                
+                // MediaFile indexes
+                MediaFile.createIndexes([
+                    { messageId: 1 },
+                    { uploadStatus: 1 }
+                ]),
+                
+                // DeliveryLog indexes
+                DeliveryLog.createIndexes([
+                    { messageId: 1, deliveryStatus: 1 },
+                    { deliveredAt: -1 }
+                ]),
+                
+                // Analytics indexes
+                SystemAnalytics.createIndexes([
+                    { metricName: 1, recordedAt: -1 }
+                ]),
+                
+                // Performance indexes
+                PerformanceMetrics.createIndexes([
+                    { operationType: 1, recordedAt: -1 }
+                ])
+            ];
+
+            await Promise.all(indexOperations);
+            console.log('✅ Database indexes created successfully');
+            
+        } catch (error) {
+            console.error('❌ Failed to create indexes:', error.message);
+            throw error;
+        }
+    }
+
+    async initializeGroups() {
+        console.log('📋 Step 3: Initializing groups...');
+        
+        try {
+            const existingGroups = await this.dbManager.getAllGroups();
+            
+            if (existingGroups.length === 0) {
+                const productionGroups = [
+                    { name: "YesuWay Congregation", description: "Main congregation group" },
+                    { name: "Church Leadership", description: "Leadership and admin group" },
+                    { name: "Media Team", description: "Media and technology team" }
+                ];
+
+                for (const groupData of productionGroups) {
+                    await this.dbManager.createGroup(groupData.name, groupData.description);
+                    console.log(`✅ Created group: ${groupData.name}`);
+                }
+                
+                console.log('✅ Production groups initialized');
+            } else {
+                console.log('ℹ️ Groups already exist, skipping initialization');
             }
-            const adminId = adminResult.id;
+            
+        } catch (error) {
+            console.error('❌ Failed to initialize groups:', error.message);
+            throw error;
+        }
+    }
 
-            // Add to admin group
-            await this.runAsync(db, `
-                INSERT OR IGNORE INTO group_members (group_id, member_id) 
-                VALUES (2, ?)
-            `, [adminId]);
+    async setupProductionCongregation() {
+        console.log('📋 Step 4: Setting up production congregation...');
+        
+        try {
+            // Get groups for reference
+            const congregationGroup = await this.dbManager.getGroupByName("YesuWay Congregation");
+            const leadershipGroup = await this.dbManager.getGroupByName("Church Leadership");
+            const mediaGroup = await this.dbManager.getGroupByName("Media Team");
+
+            if (!congregationGroup || !leadershipGroup || !mediaGroup) {
+                throw new Error("Required groups not found. Please run group initialization first.");
+            }
+
+            // Add primary admin
+            const adminPhone = this.cleanPhoneNumber("+14257729189");
+            let admin = await this.dbManager.getMemberByPhone(adminPhone);
+            
+            if (!admin) {
+                admin = await this.dbManager.createMember({
+                    phoneNumber: adminPhone,
+                    name: "Church Admin",
+                    isAdmin: true,
+                    active: true,
+                    messageCount: 0,
+                    groups: [{
+                        groupId: leadershipGroup._id,
+                        joinedAt: new Date()
+                    }]
+                });
+                console.log(`✅ Created admin: Church Admin (${adminPhone})`);
+            } else {
+                console.log(`ℹ️ Admin already exists: ${admin.name}`);
+            }
 
             // Add production members
             const productionMembers = [
-                ["+12068001141", "Mike", 1],
-                ["+14257729189", "Sam", 1],
-                ["+12065910943", "Sami", 3],
-                ["+12064349652", "Yab", 1]
+                { phone: "+12068001141", name: "Mike", groupName: "YesuWay Congregation" },
+                { phone: "+14257729189", name: "Sam", groupName: "YesuWay Congregation" },
+                { phone: "+12065910943", name: "Sami", groupName: "Media Team" },
+                { phone: "+12064349652", name: "Yab", groupName: "YesuWay Congregation" }
             ];
 
-            for (const [phone, name, groupId] of productionMembers) {
-                const cleanPhone = this.cleanPhoneNumber(phone);
+            for (const memberData of productionMembers) {
+                const cleanPhone = this.cleanPhoneNumber(memberData.phone);
+                let member = await this.dbManager.getMemberByPhone(cleanPhone);
                 
-                await this.runAsync(db, `
-                    INSERT OR REPLACE INTO members (phone_number, name, is_admin, active, message_count) 
-                    VALUES (?, ?, ?, 1, 0)
-                `, [cleanPhone, name, false]);
-
-                const memberResult = await this.getAsync(db, "SELECT id FROM members WHERE phone_number = ?", [cleanPhone]);
-                if (!memberResult) {
-                    console.warn(`⚠️ Failed to create member: ${name}`);
-                    continue;
+                // Get target group
+                let targetGroup;
+                switch (memberData.groupName) {
+                    case "YesuWay Congregation":
+                        targetGroup = congregationGroup;
+                        break;
+                    case "Church Leadership":
+                        targetGroup = leadershipGroup;
+                        break;
+                    case "Media Team":
+                        targetGroup = mediaGroup;
+                        break;
+                    default:
+                        targetGroup = congregationGroup;
                 }
-                const memberId = memberResult.id;
 
-                await this.runAsync(db, `
-                    INSERT OR IGNORE INTO group_members (group_id, member_id) 
-                    VALUES (?, ?)
-                `, [groupId, memberId]);
-
-                console.log(`✅ Added member: ${name} (${cleanPhone}) to group ${groupId}`);
+                if (!member) {
+                    member = await this.dbManager.createMember({
+                        phoneNumber: cleanPhone,
+                        name: memberData.name,
+                        isAdmin: false,
+                        active: true,
+                        messageCount: 0,
+                        groups: [{
+                            groupId: targetGroup._id,
+                            joinedAt: new Date()
+                        }]
+                    });
+                    console.log(`✅ Added member: ${memberData.name} (${cleanPhone}) to ${targetGroup.name}`);
+                } else {
+                    // Check if member is already in the target group
+                    const isInGroup = member.groups.some(g => g.groupId.toString() === targetGroup._id.toString());
+                    if (!isInGroup) {
+                        await this.dbManager.addMemberToGroup(member._id, targetGroup._id);
+                        console.log(`✅ Added existing member ${member.name} to ${targetGroup.name}`);
+                    } else {
+                        console.log(`ℹ️ Member ${member.name} already in ${targetGroup.name}`);
+                    }
+                }
             }
 
             console.log('✅ Production congregation setup completed');
-        } finally {
-            db.close();
+            
+        } catch (error) {
+            console.error('❌ Failed to setup production congregation:', error.message);
+            throw error;
         }
     }
 
     async addCustomMembers() {
-        console.log('📋 Step 3: Custom member addition...');
+        console.log('📋 Step 5: Custom member addition...');
         
         // Configure your congregation members here
         const customMembers = [
             // Add your congregation members in this format:
-            // ["+15551234567", "John Smith", 1],      // Group 1 = Main congregation
-            // ["+15551234568", "Jane Pastor", 2],     // Group 2 = Leadership
-            // ["+15551234569", "Tech Person", 3],     // Group 3 = Media team
+            // { phone: "+15551234567", name: "John Smith", groupName: "YesuWay Congregation" },
+            // { phone: "+15551234568", name: "Jane Pastor", groupName: "Church Leadership" },
+            // { phone: "+15551234569", name: "Tech Person", groupName: "Media Team" },
         ];
 
         if (customMembers.length === 0) {
@@ -356,82 +327,88 @@ class DatabaseSetup {
             return;
         }
 
-        const db = new sqlite3.Database(this.dbPath);
-        
         try {
-            for (const [phone, name, groupId] of customMembers) {
-                const cleanPhone = this.cleanPhoneNumber(phone);
+            // Get groups for reference
+            const groups = await this.dbManager.getAllGroups();
+            const groupMap = {};
+            groups.forEach(group => {
+                groupMap[group.name] = group;
+            });
+
+            for (const memberData of customMembers) {
+                const cleanPhone = this.cleanPhoneNumber(memberData.phone);
+                const targetGroup = groupMap[memberData.groupName] || groupMap["YesuWay Congregation"];
                 
-                await this.runAsync(db, `
-                    INSERT OR REPLACE INTO members (phone_number, name, is_admin, active, message_count) 
-                    VALUES (?, ?, ?, 1, 0)
-                `, [cleanPhone, name, false]);
-
-                const memberResult = await this.getAsync(db, "SELECT id FROM members WHERE phone_number = ?", [cleanPhone]);
-                if (!memberResult) {
-                    console.warn(`⚠️ Failed to create custom member: ${name}`);
-                    continue;
+                let member = await this.dbManager.getMemberByPhone(cleanPhone);
+                
+                if (!member) {
+                    member = await this.dbManager.createMember({
+                        phoneNumber: cleanPhone,
+                        name: memberData.name,
+                        isAdmin: false,
+                        active: true,
+                        messageCount: 0,
+                        groups: [{
+                            groupId: targetGroup._id,
+                            joinedAt: new Date()
+                        }]
+                    });
+                    console.log(`✅ Added custom member: ${memberData.name} (${cleanPhone}) to ${targetGroup.name}`);
+                } else {
+                    console.log(`ℹ️ Custom member already exists: ${member.name}`);
                 }
-                const memberId = memberResult.id;
-
-                await this.runAsync(db, `
-                    INSERT OR IGNORE INTO group_members (group_id, member_id) 
-                    VALUES (?, ?)
-                `, [groupId, memberId]);
-
-                console.log(`✅ Added custom member: ${name} (${cleanPhone}) to group ${groupId}`);
             }
 
-            console.log(`✅ Added ${customMembers.length} custom members`);
-        } finally {
-            db.close();
+            console.log(`✅ Processed ${customMembers.length} custom members`);
+            
+        } catch (error) {
+            console.error('❌ Failed to add custom members:', error.message);
+            throw error;
         }
     }
 
     async verifySetup() {
-        console.log('📋 Step 4: Verifying setup...');
-        
-        const db = new sqlite3.Database(this.dbPath);
+        console.log('📋 Step 6: Verifying setup...');
         
         try {
-            const groupCount = await this.getAsync(db, "SELECT COUNT(*) as count FROM groups");
-            const memberCount = await this.getAsync(db, "SELECT COUNT(*) as count FROM members WHERE active = 1");
-            const adminCount = await this.getAsync(db, "SELECT COUNT(*) as count FROM members WHERE is_admin = 1 AND active = 1");
+            const stats = await this.dbManager.getHealthStats();
+            const groups = await this.dbManager.getAllGroups();
             
             console.log('📊 Setup Verification:');
-            console.log(`   Groups: ${groupCount.count}`);
-            console.log(`   Active Members: ${memberCount.count}`);
-            console.log(`   Administrators: ${adminCount.count}`);
-
-            // List all members
-            const members = await this.allAsync(db, `
-                SELECT m.name, m.phone_number, m.is_admin, g.name as group_name
-                FROM members m
-                JOIN group_members gm ON m.id = gm.member_id
-                JOIN groups g ON gm.group_id = g.id
-                WHERE m.active = 1
-                ORDER BY m.name
-            `);
-
-            console.log('\n👥 Registered Members:');
-            for (const member of members) {
-                const role = member.is_admin ? '(Admin)' : '';
-                console.log(`   • ${member.name} ${role} - ${member.phone_number} - ${member.group_name}`);
+            console.log(`   Groups: ${groups.length}`);
+            console.log(`   Active Members: ${stats.activeMemberCount}`);
+            
+            // List groups
+            console.log('\n📁 Available Groups:');
+            for (const group of groups) {
+                console.log(`   • ${group.name} - ${group.description}`);
             }
 
-            if (memberCount.count === 0) {
+            // List all members with their groups
+            const members = await this.dbManager.getAllActiveMembers();
+            console.log('\n👥 Registered Members:');
+            
+            for (const member of members) {
+                const role = member.isAdmin ? '(Admin)' : '';
+                const groupNames = member.groups.map(g => g.groupId.name).join(', ');
+                console.log(`   • ${member.name} ${role} - ${member.phoneNumber} - Groups: ${groupNames}`);
+            }
+
+            if (stats.activeMemberCount === 0) {
                 console.warn('⚠️ No members found! The system requires at least one member to function.');
                 console.log('💡 Edit the customMembers array in setup.js to add your congregation.');
             }
 
             console.log('\n✅ Database setup verification completed');
-        } finally {
-            db.close();
+            
+        } catch (error) {
+            console.error('❌ Failed to verify setup:', error.message);
+            throw error;
         }
     }
 
     async checkEnvironment() {
-        console.log('📋 Step 5: Environment validation...');
+        console.log('📋 Step 7: Environment validation...');
         
         const requiredEnvVars = [
             'TWILIO_ACCOUNT_SID',
@@ -443,9 +420,17 @@ class DatabaseSetup {
             'R2_BUCKET_NAME'
         ];
 
+        const mongoEnvVars = [
+            'MONGODB_URI', // OR the combination below
+            'MONGODB_HOST',
+            'MONGODB_PORT',
+            'MONGODB_DATABASE'
+        ];
+
         const missing = [];
         const invalid = [];
 
+        // Check Twilio and R2 vars
         for (const envVar of requiredEnvVars) {
             const value = process.env[envVar];
             if (!value) {
@@ -453,6 +438,23 @@ class DatabaseSetup {
             } else if (value.includes('your_') || value.includes('_here') || value === 'not_configured') {
                 invalid.push(envVar);
             }
+        }
+
+        // Check MongoDB configuration
+        const mongoUri = process.env.MONGODB_URI;
+        if (!mongoUri) {
+            // Check individual components
+            if (!process.env.MONGODB_HOST) missing.push('MONGODB_HOST (or MONGODB_URI)');
+            if (!process.env.MONGODB_DATABASE) missing.push('MONGODB_DATABASE (or MONGODB_URI)');
+        }
+
+        // Validate specific formats
+        if (process.env.TWILIO_ACCOUNT_SID && !process.env.TWILIO_ACCOUNT_SID.startsWith('AC')) {
+            invalid.push('TWILIO_ACCOUNT_SID (must start with AC)');
+        }
+
+        if (process.env.R2_ENDPOINT_URL && !process.env.R2_ENDPOINT_URL.startsWith('https://')) {
+            invalid.push('R2_ENDPOINT_URL (must start with https://)');
         }
 
         if (missing.length > 0) {
@@ -469,15 +471,6 @@ class DatabaseSetup {
             }
         }
 
-        // Validate specific formats
-        if (process.env.TWILIO_ACCOUNT_SID && !process.env.TWILIO_ACCOUNT_SID.startsWith('AC')) {
-            invalid.push('TWILIO_ACCOUNT_SID (must start with AC)');
-        }
-
-        if (process.env.R2_ENDPOINT_URL && !process.env.R2_ENDPOINT_URL.startsWith('https://')) {
-            invalid.push('R2_ENDPOINT_URL (must start with https://)');
-        }
-
         if (missing.length === 0 && invalid.length === 0) {
             console.log('✅ All environment variables are properly configured');
             console.log('✅ System ready for production deployment');
@@ -491,9 +484,21 @@ class DatabaseSetup {
             console.log('   4. Restart the application after configuration');
             console.log('');
             console.log('📝 Example .env file:');
+            console.log('   # MongoDB Configuration');
+            console.log('   MONGODB_URI=mongodb://localhost:27017/yesuway_church');
+            console.log('   # OR individual components:');
+            console.log('   MONGODB_HOST=localhost');
+            console.log('   MONGODB_PORT=27017');
+            console.log('   MONGODB_DATABASE=yesuway_church');
+            console.log('   MONGODB_USERNAME=church_user');
+            console.log('   MONGODB_PASSWORD=secure_password');
+            console.log('');
+            console.log('   # Twilio Configuration');
             console.log('   TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
             console.log('   TWILIO_AUTH_TOKEN=your_auth_token_from_twilio');
             console.log('   TWILIO_PHONE_NUMBER=+1234567890');
+            console.log('');
+            console.log('   # Cloudflare R2 Configuration');
             console.log('   R2_ACCESS_KEY_ID=your_cloudflare_r2_access_key');
             console.log('   R2_SECRET_ACCESS_KEY=your_cloudflare_r2_secret_key');
             console.log('   R2_ENDPOINT_URL=https://account.r2.cloudflarestorage.com');
@@ -504,85 +509,102 @@ class DatabaseSetup {
         }
     }
 
-    async validateDatabaseIntegrity() {
-        console.log('📋 Step 6: Database integrity check...');
-        
-        const db = new sqlite3.Database(this.dbPath);
+    async testDatabaseOperations() {
+        console.log('📋 Step 8: Testing database operations...');
         
         try {
-            // Check database integrity
-            const integrityResult = await this.getAsync(db, "PRAGMA integrity_check");
-            if (integrityResult.integrity_check !== 'ok') {
-                throw new Error(`Database integrity check failed: ${integrityResult.integrity_check}`);
-            }
-
-            // Verify foreign key constraints
-            const fkResult = await this.getAsync(db, "PRAGMA foreign_key_check");
-            if (fkResult) {
-                throw new Error('Foreign key constraint violations detected');
-            }
-
-            // Check that essential tables exist
-            const tables = await this.allAsync(db, "SELECT name FROM sqlite_master WHERE type='table'");
-            const tableNames = tables.map(t => t.name);
-            
-            const requiredTables = [
-                'groups', 'members', 'group_members', 'broadcast_messages',
-                'message_reactions', 'media_files', 'delivery_log'
+            // Test basic operations
+            const testOperations = [
+                // Test member operations
+                async () => {
+                    const members = await this.dbManager.getAllActiveMembers();
+                    return members.length >= 0;
+                },
+                
+                // Test group operations
+                async () => {
+                    const groups = await this.dbManager.getAllGroups();
+                    return groups.length >= 0;
+                },
+                
+                // Test analytics recording
+                async () => {
+                    await this.dbManager.recordAnalytic('setup_test', 1, 'Setup verification test');
+                    return true;
+                },
+                
+                // Test performance metrics
+                async () => {
+                    await this.dbManager.recordPerformanceMetric('setup_test', 100, true);
+                    return true;
+                }
             ];
 
-            const missingTables = requiredTables.filter(table => !tableNames.includes(table));
-            if (missingTables.length > 0) {
-                throw new Error(`Missing required tables: ${missingTables.join(', ')}`);
+            for (let i = 0; i < testOperations.length; i++) {
+                const operation = testOperations[i];
+                const result = await operation();
+                if (!result) {
+                    throw new Error(`Test operation ${i + 1} failed`);
+                }
             }
 
-            console.log('✅ Database integrity verified');
-            console.log(`📊 Database contains ${tableNames.length} tables`);
+            console.log('✅ All database operations tested successfully');
             
-        } finally {
-            db.close();
+        } catch (error) {
+            console.error('❌ Database operation test failed:', error.message);
+            throw error;
         }
     }
 
     async run() {
         try {
-            console.log('🚀 Starting production database setup...\n');
+            console.log('🚀 Starting production MongoDB setup...\n');
             
-            await this.setupDatabase();
+            await this.connectToDatabase();
+            await this.setupCollections();
+            await this.initializeGroups();
             await this.setupProductionCongregation();
             await this.addCustomMembers();
             await this.verifySetup();
-            await this.validateDatabaseIntegrity();
+            await this.testDatabaseOperations();
             await this.checkEnvironment();
             
-            console.log('\n🎉 Production setup completed successfully!');
+            console.log('\n🎉 Production MongoDB setup completed successfully!');
             console.log('\n📝 Next steps for production deployment:');
             console.log('   1. ✅ Configure environment variables (.env file)');
             console.log('   2. ✅ Deploy to hosting platform (Render.com recommended)');
             console.log('   3. ✅ Configure Twilio webhook URL');
             console.log('   4. ✅ Set up A2P 10DLC registration with Twilio');
             console.log('   5. ✅ Configure Cloudflare R2 bucket and domain');
-            console.log('   6. ✅ Send first message to church number');
-            console.log('\n💚 Your production church SMS system is ready to serve!');
+            console.log('   6. ✅ Ensure MongoDB is accessible from production environment');
+            console.log('   7. ✅ Send first message to church number');
+            console.log('\n💚 Your production church SMS system with MongoDB is ready to serve!');
             console.log('🏛️ Professional church communication platform');
             console.log('🔇 Smart reaction tracking with silent processing');
             console.log('🧹 Clean media display with professional presentation');
             console.log('🛡️ Secure registration-only member access');
+            console.log('🗄️ MongoDB database for scalable performance');
             
         } catch (error) {
             console.error('\n❌ Production setup failed:', error.message);
             console.error('Stack trace:', error.stack);
             console.log('\n🔧 Troubleshooting:');
-            console.log('   • Ensure database file permissions are correct');
-            console.log('   • Check that SQLite3 is properly installed');
-            console.log('   • Verify no other processes are using the database');
-            console.log('   • Run setup with elevated permissions if needed');
+            console.log('   • Ensure MongoDB is running and accessible');
+            console.log('   • Check MongoDB connection string format');
+            console.log('   • Verify MongoDB authentication credentials');
+            console.log('   • Ensure network connectivity to MongoDB server');
+            console.log('   • Check MongoDB server logs for connection issues');
             process.exit(1);
+        } finally {
+            if (this.dbManager.isConnected) {
+                await this.dbManager.disconnect();
+            }
         }
     }
 }
 
 // Production environment check
+const fs = require('fs');
 if (!fs.existsSync('.env')) {
     console.log('⚠️ No .env file found.');
     console.log('💡 Create .env file with your production credentials before deployment.');
@@ -590,5 +612,5 @@ if (!fs.existsSync('.env')) {
 }
 
 // Run production setup
-const setup = new DatabaseSetup();
+const setup = new MongoDBSetup();
 setup.run();
