@@ -1140,91 +1140,122 @@ cleanPhoneNumber(phone) {
         }
     }
 
-    async broadcastMessage(fromPhone, messageText, mediaUrls = null) {
-        const startTime = Date.now();
-        logger.info(`📡 Starting broadcast from ${fromPhone}`);
+// CRITICAL FIX FOR BROADCAST MESSAGE WITH MEDIA
+// Replace the broadcastMessage method in your app.js with this fixed version
 
-        try {
-            const sender = await this.getMemberInfo(fromPhone);
+async broadcastMessage(fromPhone, messageText, mediaUrls = null) {
+    const startTime = Date.now();
+    logger.info(`📡 Starting broadcast from ${fromPhone}`);
 
-            if (!sender) {
-                logger.warn(`❌ Broadcast rejected - unregistered number: ${fromPhone}`);
-                return "You are not registered. Please contact church admin to be added to the system.";
+    // FIXED: Initialize messageId early to prevent undefined errors
+    let messageId = null;
+
+    try {
+        const sender = await this.getMemberInfo(fromPhone);
+
+        if (!sender) {
+            logger.warn(`❌ Broadcast rejected - unregistered number: ${fromPhone}`);
+            return "You are not registered. Please contact church admin to be added to the system.";
+        }
+
+        const recipients = await this.getAllActiveMembers(fromPhone);
+
+        if (recipients.length === 0) {
+            logger.warn('❌ No active recipients found');
+            return "No active congregation members found for broadcast.";
+        }
+
+        // FIXED: Ensure messageText is never empty or undefined for database storage
+        if (!messageText || messageText.trim() === '') {
+            if (mediaUrls && mediaUrls.length > 0) {
+                messageText = `[Media content - ${mediaUrls.length} file(s)]`;
+            } else {
+                messageText = "[Empty message]";
             }
+        }
 
-            const recipients = await this.getAllActiveMembers(fromPhone);
-
-            if (recipients.length === 0) {
-                logger.warn('❌ No active recipients found');
-                return "No active congregation members found for broadcast.";
-            }
-
-            // Store broadcast message in MongoDB
-            let messageId = null;
-            if (this.dbManager.isConnected) {
+        // FIXED: Store broadcast message in MongoDB with required fields
+        if (this.dbManager.isConnected) {
+            try {
                 const broadcastMessage = await this.dbManager.createBroadcastMessage({
                     fromPhone: fromPhone,
                     fromName: sender.name,
-                    originalMessage: messageText,
-                    processedMessage: messageText,
-                    messageType: mediaUrls ? 'media' : 'text',
-                    hasMedia: Boolean(mediaUrls),
+                    originalMessage: messageText, // FIXED: Always provide this required field
+                    processedMessage: messageText, // FIXED: Always provide this required field
+                    messageType: mediaUrls && mediaUrls.length > 0 ? 'media' : 'text',
+                    hasMedia: Boolean(mediaUrls && mediaUrls.length > 0),
                     mediaCount: mediaUrls ? mediaUrls.length : 0,
                     processingStatus: 'processing',
                     deliveryStatus: 'pending',
-                    isReaction: false
+                    isReaction: false,
+                    sentAt: new Date() // FIXED: Ensure sentAt is set
                 });
                 messageId = broadcastMessage._id.toString();
+                logger.info(`✅ Broadcast message stored with ID: ${messageId}`);
+            } catch (dbError) {
+                logger.error(`❌ Failed to store broadcast message: ${dbError.message}`);
+                // Continue without database storage but log the error
             }
+        }
 
-            // Process media if present
-            let cleanMediaLinks = [];
-            let largeMediaCount = 0;
+        // Process media if present
+        let cleanMediaLinks = [];
+        let largeMediaCount = 0;
 
-            if (mediaUrls && mediaUrls.length > 0) {
-                logger.info(`🔄 Processing ${mediaUrls.length} media files...`);
+        if (mediaUrls && mediaUrls.length > 0) {
+            logger.info(`🔄 Processing ${mediaUrls.length} media files...`);
+            try {
                 const { processedLinks, processingErrors } = await this.processMediaFiles(messageId, mediaUrls);
                 cleanMediaLinks = processedLinks;
                 largeMediaCount = processedLinks.length;
 
                 if (processingErrors.length > 0) {
-                    logger.warn(`⚠️ Media processing errors: ${processingErrors}`);
+                    logger.warn(`⚠️ Media processing errors: ${processingErrors.join(', ')}`);
                 }
+            } catch (mediaError) {
+                logger.error(`❌ Media processing failed: ${mediaError.message}`);
+                // Continue with text-only message
             }
+        }
 
-            // Format final message
-            const finalMessage = this.formatMessageWithMedia(
-                messageText, sender, cleanMediaLinks
-            );
+        // Format final message
+        const finalMessage = this.formatMessageWithMedia(
+            messageText, sender, cleanMediaLinks
+        );
 
-            // Update message with processed content
-            if (this.dbManager.isConnected && messageId) {
+        // Update message with processed content
+        if (this.dbManager.isConnected && messageId) {
+            try {
                 await this.dbManager.updateBroadcastMessage(messageId, {
                     processedMessage: finalMessage,
                     largeMediaCount: largeMediaCount,
                     processingStatus: 'completed'
                 });
+            } catch (updateError) {
+                logger.error(`❌ Failed to update broadcast message: ${updateError.message}`);
             }
+        }
 
-            // Reset conversation pause timer for regular messages
-            this.resetConversationPauseTimer();
+        // Reset conversation pause timer for regular messages
+        this.resetConversationPauseTimer();
 
-            // Broadcast with concurrent delivery
-            const deliveryStats = {
-                sent: 0,
-                failed: 0,
-                totalTime: 0,
-                errors: []
-            };
+        // Broadcast with concurrent delivery
+        const deliveryStats = {
+            sent: 0,
+            failed: 0,
+            totalTime: 0,
+            errors: []
+        };
 
-            const sendPromises = recipients.map(async (member) => {
-                const memberStart = Date.now();
-                try {
-                    const result = await this.sendSMS(member.phone, finalMessage);
-                    const deliveryTime = Date.now() - memberStart;
+        const sendPromises = recipients.map(async (member) => {
+            const memberStart = Date.now();
+            try {
+                const result = await this.sendSMS(member.phone, finalMessage);
+                const deliveryTime = Date.now() - memberStart;
 
-                    // Log delivery in MongoDB
-                    if (this.dbManager.isConnected && messageId) {
+                // Log delivery in MongoDB
+                if (this.dbManager.isConnected && messageId) {
+                    try {
                         await this.dbManager.createDeliveryLog({
                             messageId: messageId,
                             memberId: member.id,
@@ -1235,32 +1266,36 @@ cleanPhoneNumber(phone) {
                             errorMessage: result.error || null,
                             deliveryTimeMs: deliveryTime
                         });
+                    } catch (deliveryLogError) {
+                        logger.error(`❌ Failed to log delivery: ${deliveryLogError.message}`);
                     }
-
-                    if (result.success) {
-                        deliveryStats.sent++;
-                        logger.info(`✅ Delivered to ${member.name}: ${result.sid}`);
-                    } else {
-                        deliveryStats.failed++;
-                        deliveryStats.errors.push(`${member.name}: ${result.error}`);
-                        logger.error(`❌ Failed to ${member.name}: ${result.error}`);
-                    }
-                } catch (error) {
-                    deliveryStats.failed++;
-                    deliveryStats.errors.push(`${member.name}: ${error.message}`);
-                    logger.error(`❌ Delivery error to ${member.name}: ${error.message}`);
                 }
-            });
 
-            logger.info(`📤 Starting concurrent delivery to ${recipients.length} recipients...`);
-            await Promise.allSettled(sendPromises);
+                if (result.success) {
+                    deliveryStats.sent++;
+                    logger.info(`✅ Delivered to ${member.name}: ${result.sid}`);
+                } else {
+                    deliveryStats.failed++;
+                    deliveryStats.errors.push(`${member.name}: ${result.error}`);
+                    logger.error(`❌ Failed to ${member.name}: ${result.error}`);
+                }
+            } catch (error) {
+                deliveryStats.failed++;
+                deliveryStats.errors.push(`${member.name}: ${error.message}`);
+                logger.error(`❌ Delivery error to ${member.name}: ${error.message}`);
+            }
+        });
 
-            // Calculate final stats
-            const totalTime = (Date.now() - startTime) / 1000;
-            deliveryStats.totalTime = totalTime;
+        logger.info(`📤 Starting concurrent delivery to ${recipients.length} recipients...`);
+        await Promise.allSettled(sendPromises);
 
-            // Update final delivery status
-            if (this.dbManager.isConnected && messageId) {
+        // Calculate final stats
+        const totalTime = (Date.now() - startTime) / 1000;
+        deliveryStats.totalTime = totalTime;
+
+        // Update final delivery status
+        if (this.dbManager.isConnected && messageId) {
+            try {
                 await this.dbManager.updateBroadcastMessage(messageId, {
                     deliveryStatus: 'completed'
                 });
@@ -1272,50 +1307,54 @@ cleanPhoneNumber(phone) {
 
                 // Update sender message count
                 await this.dbManager.updateMemberActivity(fromPhone);
+            } catch (analyticsError) {
+                logger.error(`❌ Failed to record analytics: ${analyticsError.message}`);
             }
-
-            // Record broadcast performance
-            const broadcastDurationMs = Math.round(totalTime * 1000);
-            await this.recordPerformanceMetric('broadcast_complete', broadcastDurationMs, true);
-
-            logger.info(`📊 Broadcast completed in ${totalTime.toFixed(2)}s: ${deliveryStats.sent} sent, ${deliveryStats.failed} failed`);
-
-            // Return confirmation to sender if admin
-            if (sender.isAdmin) {
-                let confirmation = `✅ Broadcast completed in ${totalTime.toFixed(1)}s\n`;
-                confirmation += `📊 Delivered: ${deliveryStats.sent}/${recipients.length}\n`;
-
-                if (largeMediaCount > 0) {
-                    confirmation += `📎 Clean media links: ${largeMediaCount}\n`;
-                }
-
-                if (deliveryStats.failed > 0) {
-                    confirmation += `⚠️ Failed deliveries: ${deliveryStats.failed}\n`;
-                }
-
-                confirmation += '🔇 Smart reaction tracking: Active';
-                return confirmation;
-            } else {
-                return null; // No confirmation for regular members
-            }
-        } catch (error) {
-            logger.error(`❌ Broadcast error: ${error.message}`);
-
-            // Update message status to failed
-            if (this.dbManager.isConnected && messageId) {
-                try {
-                    await this.dbManager.updateBroadcastMessage(messageId, {
-                        deliveryStatus: 'failed',
-                        processingStatus: 'error'
-                    });
-                } catch (dbError) {
-                    // Ignore database errors during error handling
-                }
-            }
-
-            return "Broadcast failed - system administrators notified";
         }
+
+        // Record broadcast performance
+        const broadcastDurationMs = Math.round(totalTime * 1000);
+        await this.recordPerformanceMetric('broadcast_complete', broadcastDurationMs, true);
+
+        logger.info(`📊 Broadcast completed in ${totalTime.toFixed(2)}s: ${deliveryStats.sent} sent, ${deliveryStats.failed} failed`);
+
+        // Return confirmation to sender if admin
+        if (sender.isAdmin) {
+            let confirmation = `✅ Broadcast completed in ${totalTime.toFixed(1)}s\n`;
+            confirmation += `📊 Delivered: ${deliveryStats.sent}/${recipients.length}\n`;
+
+            if (largeMediaCount > 0) {
+                confirmation += `📎 Clean media links: ${largeMediaCount}\n`;
+            }
+
+            if (deliveryStats.failed > 0) {
+                confirmation += `⚠️ Failed deliveries: ${deliveryStats.failed}\n`;
+            }
+
+            confirmation += '🔇 Smart reaction tracking: Active';
+            return confirmation;
+        } else {
+            return null; // No confirmation for regular members
+        }
+    } catch (error) {
+        logger.error(`❌ Broadcast error: ${error.message}`);
+        logger.error(`❌ Broadcast stack trace: ${error.stack}`);
+
+        // Update message status to failed
+        if (this.dbManager.isConnected && messageId) {
+            try {
+                await this.dbManager.updateBroadcastMessage(messageId, {
+                    deliveryStatus: 'failed',
+                    processingStatus: 'error'
+                });
+            } catch (dbError) {
+                logger.error(`❌ Failed to update message status: ${dbError.message}`);
+            }
+        }
+
+        return "Broadcast failed - system administrators notified";
     }
+}
 
     async isAdmin(phoneNumber) {
         try {
@@ -1328,88 +1367,104 @@ cleanPhoneNumber(phone) {
         }
     }
 
-    async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
-        logger.info(`📨 Incoming message from ${fromPhone}`);
+// CRITICAL FIX FOR MEDIA PROCESSING ERRORS
+// Replace the handleIncomingMessage method in your app.js with this fixed version
 
-        try {
-            fromPhone = this.cleanPhoneNumber(fromPhone);
-            messageBody = messageBody ? messageBody.trim() : "";
+async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
+    logger.info(`📨 Incoming message from ${fromPhone}`);
 
-            // Log media if present
-            if (mediaUrls && mediaUrls.length > 0) {
-                logger.info(`📎 Received ${mediaUrls.length} media files`);
-                for (let i = 0; i < mediaUrls.length; i++) {
-                    const media = mediaUrls[i];
-                    logger.info(`   Media ${i + 1}: ${media.type || 'unknown'}`);
-                }
-            }
-
-            // Get member info - no auto-registration
-            const member = await this.getMemberInfo(fromPhone);
-
-            if (!member) {
-                logger.warn(`❌ Rejected message from unregistered number: ${fromPhone}`);
-                // Send rejection message
-                await this.sendSMS(
-                    fromPhone,
-                    "You are not registered in the church SMS system. Please contact a church administrator to be added."
-                );
-                return null;
-            }
-
-            logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
-
-            // CRITICAL: Detect reactions FIRST and handle silently
-            const reactionData = this.detectReactionPattern(messageBody);
-            if (reactionData) {
-                logger.info(`🔇 Silent reaction detected: ${member.name} reacted '${reactionData.emoji}'`);
-
-                // Find target message
-                const targetMessage = await this.dbManager.findTargetMessageForReaction(
-                    reactionData.targetMessageFragment,
-                    fromPhone
-                );
-
-                if (targetMessage) {
-                    // Store reaction silently - NO BROADCAST
-                    const success = await this.storeReactionSilently(fromPhone, reactionData, targetMessage);
-                    if (success) {
-                        logger.info('✅ Reaction stored silently - will appear in next summary');
-                        return null; // No response, no broadcast - completely silent
-                    } else {
-                        logger.error('❌ Failed to store reaction silently');
-                        return null;
-                    }
-                } else {
-                    logger.warn('⚠️ Could not find target message for reaction');
-                    return null; // Still silent even if target not found
-                }
-            }
-
-            // Handle member commands
-            if (messageBody.toUpperCase() === 'HELP') {
-                return (
-                    "📋 YESUWAY CHURCH SMS SYSTEM\n\n" +
-                    "✅ Send messages to entire congregation\n" +
-                    "✅ Share photos/videos (unlimited size)\n" +
-                    "✅ Clean media links (no technical details)\n" +
-                    "✅ Full quality preserved automatically\n" +
-                    "✅ Smart reaction tracking (silent)\n\n" +
-                    "📱 Text HELP for this message\n" +
-                    "🔇 Reactions tracked silently - summaries at 8 PM daily\n" +
-                    "🏛️ Production system - serving 24/7\n" +
-                    "🗄️ Powered by MongoDB for scalable performance"
-                );
-            }
-
-            // Default: Broadcast regular message
-            logger.info('📡 Processing regular message broadcast...');
-            return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
-        } catch (error) {
-            logger.error(`❌ Message processing error: ${error.message}`);
-            return "Message processing temporarily unavailable - please try again";
+    try {
+        fromPhone = this.cleanPhoneNumber(fromPhone);
+        
+        // FIXED: Ensure messageBody is never empty or undefined
+        messageBody = messageBody ? messageBody.trim() : "";
+        
+        // FIXED: For media-only messages, provide default text
+        if (!messageBody && mediaUrls && mediaUrls.length > 0) {
+            messageBody = `[Media content - ${mediaUrls.length} file(s)]`;
         }
+        
+        // FIXED: Ensure messageBody has a minimum value
+        if (!messageBody) {
+            messageBody = "[Empty message]";
+        }
+
+        // Log media if present
+        if (mediaUrls && mediaUrls.length > 0) {
+            logger.info(`📎 Received ${mediaUrls.length} media files`);
+            for (let i = 0; i < mediaUrls.length; i++) {
+                const media = mediaUrls[i];
+                logger.info(`   Media ${i + 1}: ${media.type || 'unknown'} - ${media.url || 'no URL'}`);
+            }
+        }
+
+        // Get member info - no auto-registration
+        const member = await this.getMemberInfo(fromPhone);
+
+        if (!member) {
+            logger.warn(`❌ Rejected message from unregistered number: ${fromPhone}`);
+            // Send rejection message
+            await this.sendSMS(
+                fromPhone,
+                "You are not registered in the church SMS system. Please contact a church administrator to be added."
+            );
+            return null;
+        }
+
+        logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
+
+        // CRITICAL: Detect reactions FIRST and handle silently
+        const reactionData = this.detectReactionPattern(messageBody);
+        if (reactionData) {
+            logger.info(`🔇 Silent reaction detected: ${member.name} reacted '${reactionData.emoji}'`);
+
+            // Find target message
+            const targetMessage = await this.dbManager.findTargetMessageForReaction(
+                reactionData.targetMessageFragment,
+                fromPhone
+            );
+
+            if (targetMessage) {
+                // Store reaction silently - NO BROADCAST
+                const success = await this.storeReactionSilently(fromPhone, reactionData, targetMessage);
+                if (success) {
+                    logger.info('✅ Reaction stored silently - will appear in next summary');
+                    return null; // No response, no broadcast - completely silent
+                } else {
+                    logger.error('❌ Failed to store reaction silently');
+                    return null;
+                }
+            } else {
+                logger.warn('⚠️ Could not find target message for reaction');
+                return null; // Still silent even if target not found
+            }
+        }
+
+        // Handle member commands
+        if (messageBody.toUpperCase() === 'HELP') {
+            return (
+                "📋 YESUWAY CHURCH SMS SYSTEM\n\n" +
+                "✅ Send messages to entire congregation\n" +
+                "✅ Share photos/videos (unlimited size)\n" +
+                "✅ Clean media links (no technical details)\n" +
+                "✅ Full quality preserved automatically\n" +
+                "✅ Smart reaction tracking (silent)\n\n" +
+                "📱 Text HELP for this message\n" +
+                "🔇 Reactions tracked silently - summaries at 8 PM daily\n" +
+                "🏛️ Production system - serving 24/7\n" +
+                "🗄️ Powered by MongoDB for scalable performance"
+            );
+        }
+
+        // Default: Broadcast regular message
+        logger.info('📡 Processing regular message broadcast...');
+        return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
+    } catch (error) {
+        logger.error(`❌ Message processing error: ${error.message}`);
+        logger.error(`❌ Stack trace: ${error.stack}`);
+        return "Message processing temporarily unavailable - please try again";
     }
+}
 }
 
 // Initialize production system
