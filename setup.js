@@ -317,13 +317,13 @@ class ProductionSetup {
             // Uncomment and modify the lines below with your actual member information
             
             // Leadership Team
-             { phone: "+14257729189", name: "Pastor MIKE", groupName: "Church Leadership", isAdmin: true },
+             { phone: "+14257729189", name: "MIKE", groupName: "Church Leadership", isAdmin: true },
             // { phone: "+1234567891", name: "Elder Name", groupName: "Church Leadership", isAdmin: true },
             // { phone: "+1234567892", name: "Deacon Name", groupName: "Church Leadership", isAdmin: false },
             
             // Main Congregation
             // { phone: "+14257729189", name: "james", groupName: "YesuWay Congregation", isAdmin: false },
-            { phone: "+2068001141", name: "wade", groupName: "YesuWay Congregation", isAdmin: false },
+            // { phone: "+2068001141", name: "wade", groupName: "YesuWay Congregation", isAdmin: false },
             // { phone: "+1234567895", name: "Member Name 3", groupName: "YesuWay Congregation", isAdmin: false },
             
             // Media and Technology Team
