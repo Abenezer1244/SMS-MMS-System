@@ -1,10 +1,9 @@
-#!/usr/bin/env node
 
 /**
- * YesuWay Church SMS System - MongoDB Setup Script
+ * YesuWay Church SMS System - Clean Production Setup Script
  * 
- * This script initializes the MongoDB database and sets up the production congregation.
- * Run this script once before deploying to production.
+ * This script initializes the MongoDB database for production use.
+ * NO TEST OR DEMO DATA - Only essential structure and your congregation.
  * 
  * Usage: node setup.js
  */
@@ -26,18 +25,17 @@ const {
 // Load environment variables
 require('dotenv').config();
 
-console.log('🏛️ YesuWay Church SMS System - MongoDB Setup');
-console.log('================================================');
+console.log('🏛️ YesuWay Church SMS System - Production Setup');
+console.log('==============================================');
 
-class MongoDBSetup {
+class ProductionSetup {
     constructor() {
         this.dbManager = new MongoDBManager(console);
-        this.connectionString = this.buildConnectionString();
+        this.connectionString = process.env.MONGODB_URI || this.buildConnectionString();
     }
 
     buildConnectionString() {
         const {
-            MONGODB_URI,
             MONGODB_HOST = 'localhost',
             MONGODB_PORT = '27017',
             MONGODB_DATABASE = 'yesuway_church',
@@ -46,12 +44,6 @@ class MongoDBSetup {
             MONGODB_AUTH_SOURCE = 'admin'
         } = process.env;
 
-        // If MONGODB_URI is provided, use it directly
-        if (MONGODB_URI) {
-            return MONGODB_URI;
-        }
-
-        // Build connection string from components
         let connectionString = 'mongodb://';
         
         if (MONGODB_USERNAME && MONGODB_PASSWORD) {
@@ -84,51 +76,40 @@ class MongoDBSetup {
         }
     }
 
-    // IMMEDIATE FIX for setup.js
-// Replace lines around 99-113 in your setup.js file
-
-async connectToDatabase() {
-    console.log('📋 Step 1: Connecting to MongoDB...');
-    
-    try {
-        // FIXED: Removed ALL deprecated options
-        const options = {
-            maxPoolSize: 10,
-            serverSelectionTimeoutMS: 5000,
-            socketTimeoutMS: 45000,
-            connectTimeoutMS: 10000,
-            retryWrites: true,
-            retryReads: true
-            
-            // REMOVED these deprecated options that cause the error:
-            // bufferCommands: false,     ❌ CAUSES ERROR
-            // bufferMaxEntries: 0        ❌ CAUSES ERROR
-        };
-
-        // Set mongoose settings
-        mongoose.set('strictQuery', false);
-        mongoose.set('bufferCommands', false); // Set at mongoose level instead
-
-        await this.dbManager.connect(this.connectionString, options);
-        console.log('✅ MongoDB connection established successfully');
+    async connectToDatabase() {
+        console.log('📋 Step 1: Connecting to MongoDB...');
         
-    } catch (error) {
-        console.error('❌ Failed to connect to MongoDB:', error.message);
-        console.log('\n🔧 Troubleshooting:');
-        console.log('   • Ensure MongoDB is running');
-        console.log('   • Check connection string format');
-        console.log('   • Verify username/password if using authentication');
-        console.log('   • Ensure network connectivity to MongoDB server');
-        throw error;
+        try {
+            const options = {
+                maxPoolSize: 10,
+                serverSelectionTimeoutMS: 5000,
+                socketTimeoutMS: 45000,
+                connectTimeoutMS: 10000,
+                retryWrites: true,
+                retryReads: true
+            };
+
+            mongoose.set('strictQuery', false);
+            mongoose.set('bufferCommands', false);
+
+            await this.dbManager.connect(this.connectionString, options);
+            console.log('✅ MongoDB connection established successfully');
+            
+        } catch (error) {
+            console.error('❌ Failed to connect to MongoDB:', error.message);
+            console.log('\n🔧 Troubleshooting:');
+            console.log('   • Ensure MongoDB is running');
+            console.log('   • Check connection string format');
+            console.log('   • Verify username/password if using authentication');
+            console.log('   • Ensure network connectivity to MongoDB server');
+            throw error;
+        }
     }
-}
 
     async setupCollections() {
         console.log('📋 Step 2: Setting up collections and indexes...');
         
         try {
-            // MongoDB will automatically create collections when documents are inserted
-            // But we can ensure indexes are created properly
             await this.createIndexes();
             console.log('✅ Collections and indexes configured successfully');
             
@@ -140,51 +121,42 @@ async connectToDatabase() {
 
     async createIndexes() {
         try {
-            // Create indexes for optimal performance
             const indexOperations = [
-                // Member indexes
                 Member.createIndexes([
                     { phoneNumber: 1 },
                     { active: 1, phoneNumber: 1 },
                     { 'groups.groupId': 1 }
                 ]),
                 
-                // Group indexes
                 Group.createIndexes([
                     { active: 1, name: 1 }
                 ]),
                 
-                // BroadcastMessage indexes
                 BroadcastMessage.createIndexes([
                     { sentAt: -1, isReaction: 1 },
                     { fromPhone: 1, sentAt: -1 },
                     { targetMessageId: 1 }
                 ]),
                 
-                // MessageReaction indexes
                 MessageReaction.createIndexes([
                     { targetMessageId: 1, isProcessed: 1 },
                     { createdAt: -1 }
                 ]),
                 
-                // MediaFile indexes
                 MediaFile.createIndexes([
                     { messageId: 1 },
                     { uploadStatus: 1 }
                 ]),
                 
-                // DeliveryLog indexes
                 DeliveryLog.createIndexes([
                     { messageId: 1, deliveryStatus: 1 },
                     { deliveredAt: -1 }
                 ]),
                 
-                // Analytics indexes
                 SystemAnalytics.createIndexes([
                     { metricName: 1, recordedAt: -1 }
                 ]),
                 
-                // Performance indexes
                 PerformanceMetrics.createIndexes([
                     { operationType: 1, recordedAt: -1 }
                 ])
@@ -200,7 +172,7 @@ async connectToDatabase() {
     }
 
     async initializeGroups() {
-        console.log('📋 Step 3: Initializing groups...');
+        console.log('📋 Step 3: Initializing church groups...');
         
         try {
             const existingGroups = await this.dbManager.getAllGroups();
@@ -217,7 +189,7 @@ async connectToDatabase() {
                     console.log(`✅ Created group: ${groupData.name}`);
                 }
                 
-                console.log('✅ Production groups initialized');
+                console.log('✅ Church groups initialized');
             } else {
                 console.log('ℹ️ Groups already exist, skipping initialization');
             }
@@ -228,115 +200,50 @@ async connectToDatabase() {
         }
     }
 
-    async setupProductionCongregation() {
-        console.log('📋 Step 4: Setting up production congregation...');
+    async addProductionCongregation() {
+        console.log('📋 Step 4: Adding your congregation members...');
         
-        try {
-            // Get groups for reference
-            const congregationGroup = await this.dbManager.getGroupByName("YesuWay Congregation");
-            const leadershipGroup = await this.dbManager.getGroupByName("Church Leadership");
-            const mediaGroup = await this.dbManager.getGroupByName("Media Team");
-
-            if (!congregationGroup || !leadershipGroup || !mediaGroup) {
-                throw new Error("Required groups not found. Please run group initialization first.");
-            }
-
-            // Add primary admin
-            const adminPhone = this.cleanPhoneNumber("+14257729189");
-            let admin = await this.dbManager.getMemberByPhone(adminPhone);
+        // 🏛️ CONFIGURE YOUR CONGREGATION HERE
+        // Add your real church members in this array
+        const congregationMembers = [
+            // EXAMPLE FORMAT (replace with your actual members):
+            // { phone: "+1234567890", name: "Pastor John", groupName: "Church Leadership", isAdmin: true },
+            // { phone: "+1234567891", name: "Mary Smith", groupName: "YesuWay Congregation", isAdmin: false },
+            // { phone: "+1234567892", name: "David Wilson", groupName: "YesuWay Congregation", isAdmin: false },
+            // { phone: "+1234567893", name: "Sarah Tech", groupName: "Media Team", isAdmin: false },
             
-            if (!admin) {
-                admin = await this.dbManager.createMember({
-                    phoneNumber: adminPhone,
-                    name: "Church Admin",
-                    isAdmin: true,
-                    active: true,
-                    messageCount: 0,
-                    groups: [{
-                        groupId: leadershipGroup._id,
-                        joinedAt: new Date()
-                    }]
-                });
-                console.log(`✅ Created admin: Church Admin (${adminPhone})`);
-            } else {
-                console.log(`ℹ️ Admin already exists: ${admin.name}`);
-            }
-
-            // Add production members
-            const productionMembers = [
-                { phone: "+12068001141", name: "Mike", groupName: "YesuWay Congregation" },
-                { phone: "+14257729189", name: "Sam", groupName: "YesuWay Congregation" },
-                { phone: "+12065910943", name: "Sami", groupName: "Media Team" },
-                { phone: "+12064349652", name: "Yab", groupName: "YesuWay Congregation" }
-            ];
-
-            for (const memberData of productionMembers) {
-                const cleanPhone = this.cleanPhoneNumber(memberData.phone);
-                let member = await this.dbManager.getMemberByPhone(cleanPhone);
-                
-                // Get target group
-                let targetGroup;
-                switch (memberData.groupName) {
-                    case "YesuWay Congregation":
-                        targetGroup = congregationGroup;
-                        break;
-                    case "Church Leadership":
-                        targetGroup = leadershipGroup;
-                        break;
-                    case "Media Team":
-                        targetGroup = mediaGroup;
-                        break;
-                    default:
-                        targetGroup = congregationGroup;
-                }
-
-                if (!member) {
-                    member = await this.dbManager.createMember({
-                        phoneNumber: cleanPhone,
-                        name: memberData.name,
-                        isAdmin: false,
-                        active: true,
-                        messageCount: 0,
-                        groups: [{
-                            groupId: targetGroup._id,
-                            joinedAt: new Date()
-                        }]
-                    });
-                    console.log(`✅ Added member: ${memberData.name} (${cleanPhone}) to ${targetGroup.name}`);
-                } else {
-                    // Check if member is already in the target group
-                    const isInGroup = member.groups.some(g => g.groupId.toString() === targetGroup._id.toString());
-                    if (!isInGroup) {
-                        await this.dbManager.addMemberToGroup(member._id, targetGroup._id);
-                        console.log(`✅ Added existing member ${member.name} to ${targetGroup.name}`);
-                    } else {
-                        console.log(`ℹ️ Member ${member.name} already in ${targetGroup.name}`);
-                    }
-                }
-            }
-
-            console.log('✅ Production congregation setup completed');
+            // 🔥 ADD YOUR REAL CONGREGATION MEMBERS HERE:
+            // Uncomment and modify the lines below with your actual member information
             
-        } catch (error) {
-            console.error('❌ Failed to setup production congregation:', error.message);
-            throw error;
-        }
-    }
-
-    async addCustomMembers() {
-        console.log('📋 Step 5: Custom member addition...');
-        
-        // Configure your congregation members here
-        const customMembers = [
-            // Add your congregation members in this format:
-             { phone: "+14257729189", name: "mike", groupName: "YesuWay Congregation" },
-             { phone: "+12068001141", name: "michael", groupName: "Church Leadership" },
-            // { phone: "+15551234569", name: "Tech Person", groupName: "Media Team" },
+            // Leadership
+            // { phone: "+1234567890", name: "Pastor Name", groupName: "Church Leadership", isAdmin: true },
+            // { phone: "+1234567891", name: "Elder Name", groupName: "Church Leadership", isAdmin: false },
+            
+            // Congregation  
+            // { phone: "+1234567892", name: "Member Name 1", groupName: "YesuWay Congregation", isAdmin: false },
+            // { phone: "+1234567893", name: "Member Name 2", groupName: "YesuWay Congregation", isAdmin: false },
+            
+            // Media Team
+            // { phone: "+1234567894", name: "Tech Person", groupName: "Media Team", isAdmin: false },
         ];
 
-        if (customMembers.length === 0) {
-            console.log('ℹ️ No custom members configured. Edit setup.js to add your congregation.');
-            console.log('💡 Add members to the customMembers array above this message.');
+        if (congregationMembers.length === 0) {
+            console.log('⚠️ No congregation members configured!');
+            console.log('');
+            console.log('📝 TO ADD YOUR CONGREGATION:');
+            console.log('   1. Edit this setup.js file');
+            console.log('   2. Find the "congregationMembers" array above');
+            console.log('   3. Add your church members in this format:');
+            console.log('      { phone: "+1234567890", name: "Member Name", groupName: "YesuWay Congregation", isAdmin: false }');
+            console.log('');
+            console.log('📞 Available groups:');
+            console.log('   • "YesuWay Congregation" - Main congregation');
+            console.log('   • "Church Leadership" - Pastors, elders, admins');
+            console.log('   • "Media Team" - Technology and media team');
+            console.log('');
+            console.log('🔑 Set isAdmin: true for church administrators');
+            console.log('');
+            console.log('✅ Database structure is ready - add your members and run setup again');
             return;
         }
 
@@ -348,17 +255,21 @@ async connectToDatabase() {
                 groupMap[group.name] = group;
             });
 
-            for (const memberData of customMembers) {
+            let addedCount = 0;
+            let skippedCount = 0;
+
+            for (const memberData of congregationMembers) {
                 const cleanPhone = this.cleanPhoneNumber(memberData.phone);
                 const targetGroup = groupMap[memberData.groupName] || groupMap["YesuWay Congregation"];
                 
+                // Check if member already exists
                 let member = await this.dbManager.getMemberByPhone(cleanPhone);
                 
                 if (!member) {
                     member = await this.dbManager.createMember({
                         phoneNumber: cleanPhone,
                         name: memberData.name,
-                        isAdmin: false,
+                        isAdmin: Boolean(memberData.isAdmin),
                         active: true,
                         messageCount: 0,
                         groups: [{
@@ -366,53 +277,54 @@ async connectToDatabase() {
                             joinedAt: new Date()
                         }]
                     });
-                    console.log(`✅ Added custom member: ${memberData.name} (${cleanPhone}) to ${targetGroup.name}`);
+                    
+                    const role = memberData.isAdmin ? '(Admin)' : '';
+                    console.log(`✅ Added: ${memberData.name} ${role} (${cleanPhone}) to ${targetGroup.name}`);
+                    addedCount++;
                 } else {
-                    console.log(`ℹ️ Custom member already exists: ${member.name}`);
+                    console.log(`ℹ️ Already exists: ${member.name} (${cleanPhone})`);
+                    skippedCount++;
                 }
             }
 
-            console.log(`✅ Processed ${customMembers.length} custom members`);
+            console.log(`✅ Congregation setup completed - Added: ${addedCount}, Skipped: ${skippedCount}`);
             
         } catch (error) {
-            console.error('❌ Failed to add custom members:', error.message);
+            console.error('❌ Failed to add congregation members:', error.message);
             throw error;
         }
     }
 
     async verifySetup() {
-        console.log('📋 Step 6: Verifying setup...');
+        console.log('📋 Step 5: Verifying production setup...');
         
         try {
             const stats = await this.dbManager.getHealthStats();
             const groups = await this.dbManager.getAllGroups();
+            const members = await this.dbManager.getAllActiveMembers();
             
-            console.log('📊 Setup Verification:');
+            console.log('📊 Production Setup Verification:');
             console.log(`   Groups: ${groups.length}`);
             console.log(`   Active Members: ${stats.activeMemberCount}`);
             
-            // List groups
-            console.log('\n📁 Available Groups:');
+            console.log('\n📁 Church Groups:');
             for (const group of groups) {
                 console.log(`   • ${group.name} - ${group.description}`);
             }
 
-            // List all members with their groups
-            const members = await this.dbManager.getAllActiveMembers();
-            console.log('\n👥 Registered Members:');
-            
-            for (const member of members) {
-                const role = member.isAdmin ? '(Admin)' : '';
-                const groupNames = member.groups.map(g => g.groupId.name).join(', ');
-                console.log(`   • ${member.name} ${role} - ${member.phoneNumber} - Groups: ${groupNames}`);
+            if (members.length > 0) {
+                console.log('\n👥 Registered Congregation Members:');
+                for (const member of members) {
+                    const role = member.isAdmin ? '(Admin)' : '';
+                    const groupNames = member.groups.map(g => g.groupId.name).join(', ');
+                    console.log(`   • ${member.name} ${role} - ${member.phoneNumber} - Groups: ${groupNames}`);
+                }
+            } else {
+                console.warn('\n⚠️ No congregation members found!');
+                console.log('💡 Edit the congregationMembers array in this setup.js file to add your church members.');
             }
 
-            if (stats.activeMemberCount === 0) {
-                console.warn('⚠️ No members found! The system requires at least one member to function.');
-                console.log('💡 Edit the customMembers array in setup.js to add your congregation.');
-            }
-
-            console.log('\n✅ Database setup verification completed');
+            console.log('\n✅ Production setup verification completed');
             
         } catch (error) {
             console.error('❌ Failed to verify setup:', error.message);
@@ -420,8 +332,8 @@ async connectToDatabase() {
         }
     }
 
-    async checkEnvironment() {
-        console.log('📋 Step 7: Environment validation...');
+    async validateEnvironment() {
+        console.log('📋 Step 6: Validating production environment...');
         
         const requiredEnvVars = [
             'TWILIO_ACCOUNT_SID',
@@ -433,17 +345,9 @@ async connectToDatabase() {
             'R2_BUCKET_NAME'
         ];
 
-        const mongoEnvVars = [
-            'MONGODB_URI', // OR the combination below
-            'MONGODB_HOST',
-            'MONGODB_PORT',
-            'MONGODB_DATABASE'
-        ];
-
         const missing = [];
         const invalid = [];
 
-        // Check Twilio and R2 vars
         for (const envVar of requiredEnvVars) {
             const value = process.env[envVar];
             if (!value) {
@@ -453,12 +357,9 @@ async connectToDatabase() {
             }
         }
 
-        // Check MongoDB configuration
-        const mongoUri = process.env.MONGODB_URI;
-        if (!mongoUri) {
-            // Check individual components
-            if (!process.env.MONGODB_HOST) missing.push('MONGODB_HOST (or MONGODB_URI)');
-            if (!process.env.MONGODB_DATABASE) missing.push('MONGODB_DATABASE (or MONGODB_URI)');
+        // Validate MongoDB connection string
+        if (!process.env.MONGODB_URI) {
+            if (!process.env.MONGODB_HOST) missing.push('MONGODB_URI (or MONGODB_HOST)');
         }
 
         // Validate specific formats
@@ -470,85 +371,50 @@ async connectToDatabase() {
             invalid.push('R2_ENDPOINT_URL (must start with https://)');
         }
 
-        if (missing.length > 0) {
-            console.log('❌ Missing required environment variables:');
-            for (const envVar of missing) {
-                console.log(`   • ${envVar}`);
-            }
-        }
-
-        if (invalid.length > 0) {
-            console.log('❌ Environment variables with invalid/placeholder values:');
-            for (const envVar of invalid) {
-                console.log(`   • ${envVar}: ${process.env[envVar]}`);
-            }
-        }
-
         if (missing.length === 0 && invalid.length === 0) {
-            console.log('✅ All environment variables are properly configured');
+            console.log('✅ All environment variables properly configured');
             console.log('✅ System ready for production deployment');
         } else {
-            console.log('\n❌ ENVIRONMENT CONFIGURATION REQUIRED');
-            console.log('');
-            console.log('💡 Required actions:');
-            console.log('   1. Create .env file with proper credentials');
-            console.log('   2. Set all required environment variables');
-            console.log('   3. Ensure values are not placeholders');
-            console.log('   4. Restart the application after configuration');
-            console.log('');
-            console.log('📝 Example .env file:');
-            console.log('   # MongoDB Configuration');
-            console.log('   MONGODB_URI=mongodb://localhost:27017/yesuway_church');
-            console.log('   # OR individual components:');
-            console.log('   MONGODB_HOST=localhost');
-            console.log('   MONGODB_PORT=27017');
-            console.log('   MONGODB_DATABASE=yesuway_church');
-            console.log('   MONGODB_USERNAME=church_user');
-            console.log('   MONGODB_PASSWORD=secure_password');
-            console.log('');
-            console.log('   # Twilio Configuration');
-            console.log('   TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
-            console.log('   TWILIO_AUTH_TOKEN=your_auth_token_from_twilio');
-            console.log('   TWILIO_PHONE_NUMBER=+1234567890');
-            console.log('');
-            console.log('   # Cloudflare R2 Configuration');
-            console.log('   R2_ACCESS_KEY_ID=your_cloudflare_r2_access_key');
-            console.log('   R2_SECRET_ACCESS_KEY=your_cloudflare_r2_secret_key');
-            console.log('   R2_ENDPOINT_URL=https://account.r2.cloudflarestorage.com');
-            console.log('   R2_BUCKET_NAME=your-church-media-bucket');
-            console.log('   R2_PUBLIC_URL=https://media.yourchurch.org');
-            
-            console.log('\n🚨 PRODUCTION DEPLOYMENT WILL FAIL WITHOUT PROPER CONFIGURATION');
+            if (missing.length > 0) {
+                console.log('❌ Missing required environment variables:');
+                missing.forEach(envVar => console.log(`   • ${envVar}`));
+            }
+
+            if (invalid.length > 0) {
+                console.log('❌ Environment variables with invalid values:');
+                invalid.forEach(envVar => console.log(`   • ${envVar}`));
+            }
+
+            console.log('\n🔧 Required .env configuration:');
+            console.log('MONGODB_URI=mongodb+srv://church_admin:12!Michael@yesuway-church.yb9ffd2.mongodb.net/?retryWrites=true&w=majority&appName=yesuway-church');
+            console.log('TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+            console.log('TWILIO_AUTH_TOKEN=your_auth_token_from_twilio');
+            console.log('TWILIO_PHONE_NUMBER=+1234567890');
+            console.log('R2_ACCESS_KEY_ID=your_cloudflare_r2_access_key');
+            console.log('R2_SECRET_ACCESS_KEY=your_cloudflare_r2_secret_key');
+            console.log('R2_ENDPOINT_URL=https://account.r2.cloudflarestorage.com');
+            console.log('R2_BUCKET_NAME=your-church-media-bucket');
+            console.log('R2_PUBLIC_URL=https://media.yourchurch.org');
         }
     }
 
     async testDatabaseOperations() {
-        console.log('📋 Step 8: Testing database operations...');
+        console.log('📋 Step 7: Testing database operations...');
         
         try {
-            // Test basic operations
             const testOperations = [
-                // Test member operations
                 async () => {
                     const members = await this.dbManager.getAllActiveMembers();
                     return members.length >= 0;
                 },
                 
-                // Test group operations
                 async () => {
                     const groups = await this.dbManager.getAllGroups();
                     return groups.length >= 0;
                 },
                 
-                // Test analytics recording
                 async () => {
-                    await this.dbManager.recordAnalytic('setup_test', 1, 'Setup verification test');
-                    return true;
-                },
-                
-                // Test performance metrics
-                async () => {
-                    await this.dbManager.recordPerformanceMetric('setup_test', 100, true);
+                    await this.dbManager.recordAnalytic('production_setup', 1, 'Production setup completed');
                     return true;
                 }
             ];
@@ -571,26 +437,24 @@ async connectToDatabase() {
 
     async run() {
         try {
-            console.log('🚀 Starting production MongoDB setup...\n');
+            console.log('🚀 Starting clean production setup...\n');
             
             await this.connectToDatabase();
             await this.setupCollections();
             await this.initializeGroups();
-            await this.setupProductionCongregation();
-            await this.addCustomMembers();
+            await this.addProductionCongregation();
             await this.verifySetup();
             await this.testDatabaseOperations();
-            await this.checkEnvironment();
+            await this.validateEnvironment();
             
-            console.log('\n🎉 Production MongoDB setup completed successfully!');
-            console.log('\n📝 Next steps for production deployment:');
-            console.log('   1. ✅ Configure environment variables (.env file)');
+            console.log('\n🎉 Production setup completed successfully!');
+            console.log('\n📝 Next steps for deployment:');
+            console.log('   1. ✅ Configure all environment variables');
             console.log('   2. ✅ Deploy to hosting platform (Render.com recommended)');
-            console.log('   3. ✅ Configure Twilio webhook URL');
-            console.log('   4. ✅ Set up A2P 10DLC registration with Twilio');
-            console.log('   5. ✅ Configure Cloudflare R2 bucket and domain');
-            console.log('   6. ✅ Ensure MongoDB is accessible from production environment');
-            console.log('   7. ✅ Send first message to church number');
+            console.log('   3. ✅ Set up A2P 10DLC registration with Twilio');
+            console.log('   4. ✅ Configure Cloudflare R2 bucket and domain');
+            console.log('   5. ✅ Ensure MongoDB is accessible from production environment');
+            console.log('   6. ✅ Send first message to church number');
             console.log('\n💚 Your production church SMS system with MongoDB is ready to serve!');
             console.log('🏛️ Professional church communication platform');
             console.log('🔇 Smart reaction tracking with silent processing');
