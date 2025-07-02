@@ -22,8 +22,11 @@ class MongoDBManager {
     // PRODUCTION FIXES FOR database.js
 // Replace your connect method in MongoDBManager class with this corrected version:
 
+// IMMEDIATE FIX for database.js
+// Replace the connect method in your MongoDBManager class
+
 async connect(connectionString, options = {}) {
-    // FIXED: Updated connection options that are compatible with latest MongoDB driver
+    // FIXED: Only use supported MongoDB options
     const defaultOptions = {
         maxPoolSize: 10,
         serverSelectionTimeoutMS: 5000,
@@ -31,18 +34,18 @@ async connect(connectionString, options = {}) {
         connectTimeoutMS: 10000,
         retryWrites: true,
         retryReads: true,
-        // REMOVED all deprecated options:
-        // - bufferCommands (now handled automatically)
-        // - bufferMaxEntries (deprecated)
-        // - useNewUrlParser (deprecated) 
-        // - useUnifiedTopology (deprecated)
+        // REMOVED these options that cause "bufferMaxEntries is not supported":
+        // bufferCommands: false,     ❌ DEPRECATED
+        // bufferMaxEntries: 0,       ❌ DEPRECATED AND CAUSES ERROR
+        // useNewUrlParser: true,     ❌ DEPRECATED
+        // useUnifiedTopology: true   ❌ DEPRECATED
         ...options
     };
 
     try {
-        // Set Mongoose to use strict mode for queries
+        // Set Mongoose settings at the library level
         mongoose.set('strictQuery', false);
-        mongoose.set('bufferCommands', false); // Set this at mongoose level
+        mongoose.set('bufferCommands', false); // This is the correct way
         
         await mongoose.connect(connectionString, defaultOptions);
         this.isConnected = true;

@@ -84,31 +84,44 @@ class MongoDBSetup {
         }
     }
 
-    async connectToDatabase() {
-        console.log('📋 Step 1: Connecting to MongoDB...');
-        
-        try {
-            const options = {
-                maxPoolSize: 10,
-                serverSelectionTimeoutMS: 5000,
-                socketTimeoutMS: 45000,
-                bufferCommands: false,
-                bufferMaxEntries: 0
-            };
+    // IMMEDIATE FIX for setup.js
+// Replace lines around 99-113 in your setup.js file
 
-            await this.dbManager.connect(this.connectionString, options);
-            console.log('✅ MongoDB connection established successfully');
+async connectToDatabase() {
+    console.log('📋 Step 1: Connecting to MongoDB...');
+    
+    try {
+        // FIXED: Removed ALL deprecated options
+        const options = {
+            maxPoolSize: 10,
+            serverSelectionTimeoutMS: 5000,
+            socketTimeoutMS: 45000,
+            connectTimeoutMS: 10000,
+            retryWrites: true,
+            retryReads: true
             
-        } catch (error) {
-            console.error('❌ Failed to connect to MongoDB:', error.message);
-            console.log('\n🔧 Troubleshooting:');
-            console.log('   • Ensure MongoDB is running');
-            console.log('   • Check connection string format');
-            console.log('   • Verify username/password if using authentication');
-            console.log('   • Ensure network connectivity to MongoDB server');
-            throw error;
-        }
+            // REMOVED these deprecated options that cause the error:
+            // bufferCommands: false,     ❌ CAUSES ERROR
+            // bufferMaxEntries: 0        ❌ CAUSES ERROR
+        };
+
+        // Set mongoose settings
+        mongoose.set('strictQuery', false);
+        mongoose.set('bufferCommands', false); // Set at mongoose level instead
+
+        await this.dbManager.connect(this.connectionString, options);
+        console.log('✅ MongoDB connection established successfully');
+        
+    } catch (error) {
+        console.error('❌ Failed to connect to MongoDB:', error.message);
+        console.log('\n🔧 Troubleshooting:');
+        console.log('   • Ensure MongoDB is running');
+        console.log('   • Check connection string format');
+        console.log('   • Verify username/password if using authentication');
+        console.log('   • Ensure network connectivity to MongoDB server');
+        throw error;
     }
+}
 
     async setupCollections() {
         console.log('📋 Step 2: Setting up collections and indexes...');
