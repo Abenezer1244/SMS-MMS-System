@@ -11,7 +11,6 @@ const fs = require('fs').promises;
 const path = require('path');
 const mime = require('mime-types');
 const axios = require('axios');
-const schedule = require('node-schedule');
 const { v4: uuidv4 } = require('uuid');
 const winston = require('winston');
 const morgan = require('morgan');
@@ -22,8 +21,6 @@ const {
     Group,
     Member,
     BroadcastMessage,
-    MessageReaction,
-    ReactionSummary,
     MediaFile,
     DeliveryLog,
     SystemAnalytics,
@@ -102,7 +99,7 @@ const app = express();
 
 // Security and performance middleware
 app.use(helmet({
-    contentSecurityPolicy: false // Allow inline scripts for basic HTML responses
+    contentSecurityPolicy: false
 }));
 app.use(compression());
 app.use(cors());
@@ -112,7 +109,7 @@ app.use(express.urlencoded({ limit: '100mb', extended: true }));
 // Rate limiting
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 1000, // Limit each IP to 1000 requests per windowMs
+    max: 1000,
     message: 'Too many requests from this IP'
 });
 app.use(limiter);
@@ -127,52 +124,45 @@ class ProductionChurchSMS {
         this.twilioClient = null;
         this.r2Client = null;
         this.dbManager = new MongoDBManager(logger);
-        this.conversationPauseTimer = null;
-        this.lastRegularMessageTime = null;
         this.performanceMetrics = [];
         
         this.initializeServices();
         this.initializeDatabase();
-        this.startReactionScheduler();
         
-        logger.info('SUCCESS: Production Church SMS System with MongoDB and Smart Reaction Tracking initialized');
+        logger.info('SUCCESS: Production Church SMS System with MongoDB initialized');
     }
 
-buildMongoConnectionString() {
-    const {
-        uri, host, port, database, username, password, authSource
-    } = config.mongodb;
+    buildMongoConnectionString() {
+        const {
+            uri, host, port, database, username, password, authSource
+        } = config.mongodb;
 
-    // If URI is provided, use it directly
-    if (uri && uri !== 'undefined' && !uri.includes('localhost')) {
-        logger.info('📋 Using provided MongoDB URI');
-        return uri;
+        if (uri && uri !== 'undefined' && !uri.includes('localhost')) {
+            logger.info('📋 Using provided MongoDB URI');
+            return uri;
+        }
+
+        let connectionString = 'mongodb://';
+        
+        if (username && password && username !== 'undefined' && password !== 'undefined') {
+            connectionString += `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`;
+        }
+        
+        connectionString += `${host || 'localhost'}:${port || '27017'}/${database || 'yesuway_church'}`;
+        
+        if (username && password && username !== 'undefined' && password !== 'undefined') {
+            connectionString += `?authSource=${authSource || 'admin'}`;
+        }
+
+        logger.info(`📋 Built MongoDB connection string for: ${host || 'localhost'}:${port || '27017'}`);
+        return connectionString;
     }
 
-    // Build connection string from components
-    let connectionString = 'mongodb://';
-    
-    if (username && password && username !== 'undefined' && password !== 'undefined') {
-        connectionString += `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`;
-    }
-    
-    connectionString += `${host || 'localhost'}:${port || '27017'}/${database || 'yesuway_church'}`;
-    
-    if (username && password && username !== 'undefined' && password !== 'undefined') {
-        connectionString += `?authSource=${authSource || 'admin'}`;
-    }
-
-    logger.info(`📋 Built MongoDB connection string for: ${host || 'localhost'}:${port || '27017'}`);
-    return connectionString;
-}
-
-initializeServices() {
-    // Enhanced production-ready Twilio initialization
-    if (this.isValidTwilioCredentials()) {
-        try {
-            this.twilioClient = twilio(config.twilio.accountSid, config.twilio.authToken);
+    initializeServices() {
+        if (this.isValidTwilioCredentials()) {
+            try {
+                this.twilioClient = twilio(config.twilio.accountSid, config.twilio.authToken);
                 
-                // Test the connection with a simple API call
                 this.twilioClient.api.accounts(config.twilio.accountSid).fetch()
                     .then(account => {
                         logger.info(`SUCCESS: Twilio production connection established: ${account.friendlyName}`);
@@ -200,7 +190,6 @@ initializeServices() {
             this.twilioClient = null;
         }
 
-        // Enhanced production-ready R2 initialization
         if (this.isValidR2Credentials()) {
             try {
                 this.r2Client = new AWS.S3({
@@ -211,7 +200,6 @@ initializeServices() {
                     s3ForcePathStyle: true
                 });
                 
-                // Test the connection
                 this.r2Client.headBucket({ Bucket: config.r2.bucketName }).promise()
                     .then(() => {
                         logger.info(`SUCCESS: Cloudflare R2 production connection established: ${config.r2.bucketName}`);
@@ -239,7 +227,6 @@ initializeServices() {
             this.r2Client = null;
         }
 
-        // Log final service status
         this.logServiceStatus();
     }
 
@@ -288,7 +275,6 @@ initializeServices() {
         logger.info(`   📱 Twilio SMS: ${this.twilioClient ? '✅ Connected' : '❌ Unavailable (Mock Mode)'}`);
         logger.info(`   ☁️ R2 Storage: ${this.r2Client ? '✅ Connected' : '❌ Unavailable (Local Mode)'}`);
         logger.info(`   🗄️ MongoDB: ${this.dbManager.isConnected ? '✅ Connected' : '⏳ Connecting...'}`);
-        logger.info(`   🔇 Reactions: ✅ Smart Tracking Active`);
         logger.info(`   🛡️ Security: ✅ Production Ready`);
         
         if (!this.twilioClient) {
@@ -306,153 +292,97 @@ initializeServices() {
         }
     }
 
+    async initializeDatabase() {
+        const maxRetries = 5;
+        let retryCount = 0;
+        
+        const connectionString = this.buildMongoConnectionString();
+        logger.info(`🔗 Attempting MongoDB connection to: ${connectionString.replace(/\/\/[^:]+:[^@]+@/, '//*****:*****@')}`);
+        
+        while (retryCount < maxRetries) {
+            try {
+                if (retryCount > 0) {
+                    await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+                    logger.info(`🔄 MongoDB connection retry ${retryCount}/${maxRetries}`);
+                }
+                
+                const options = {
+                    maxPoolSize: 10,
+                    minPoolSize: 5,
+                    serverSelectionTimeoutMS: 5000,
+                    socketTimeoutMS: 45000,
+                    connectTimeoutMS: 10000,
+                    retryWrites: true,
+                    retryReads: true
+                };
 
-// COMPLETE REPLACEMENT FOR YOUR DATABASE CONNECTION CODE
-// Replace your entire initializeDatabase() method in app.js with this:
-
-
-
-// In your ProductionChurchSMS class, replace the initializeDatabase method:
-// PRODUCTION FIXES FOR app.js
-// Replace your entire initializeDatabase() method with this corrected version:
-
-async initializeDatabase() {
-    const maxRetries = 5;
-    let retryCount = 0;
-    
-    // Build connection string
-    const connectionString = this.buildMongoConnectionString();
-    logger.info(`🔗 Attempting MongoDB connection to: ${connectionString.replace(/\/\/[^:]+:[^@]+@/, '//*****:*****@')}`);
-    
-    while (retryCount < maxRetries) {
-        try {
-            if (retryCount > 0) {
-                await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-                logger.info(`🔄 MongoDB connection retry ${retryCount}/${maxRetries}`);
+                mongoose.set('strictQuery', false);
+                mongoose.set('bufferCommands', false);
+                
+                await mongoose.connect(connectionString, options);
+                
+                if (this.dbManager) {
+                    this.dbManager.isConnected = true;
+                    this.dbManager.connectionRetries = 0;
+                }
+                
+                this.setupMongooseEventHandlers();
+                
+                logger.info('✅ Production MongoDB initialized');
+                return;
+                
+            } catch (error) {
+                retryCount++;
+                logger.error(`❌ MongoDB connection attempt ${retryCount} failed: ${error.message}`);
+                
+                if (retryCount >= maxRetries) {
+                    logger.error('❌ All MongoDB connection attempts failed');
+                    logger.warn('⚠️ Continuing without MongoDB connection');
+                    logger.warn('⚠️ Some features may not work until database is connected');
+                    
+                    if (this.dbManager) {
+                        this.dbManager.isConnected = false;
+                    }
+                    return;
+                }
             }
-            
-            // FIXED: Corrected connection options - removed ALL deprecated options
-            const options = {
-                // Core connection settings
-                maxPoolSize: 10,
-                minPoolSize: 5,
-                serverSelectionTimeoutMS: 5000,
-                socketTimeoutMS: 45000,
-                connectTimeoutMS: 10000,
-                
-                // Retry settings
-                retryWrites: true,
-                retryReads: true
-                
-                // REMOVED these deprecated options that cause the error:
-                // bufferCommands: false,     ❌ DEPRECATED
-                // bufferMaxEntries: 0,       ❌ DEPRECATED 
-                // useNewUrlParser: true,     ❌ DEPRECATED
-                // useUnifiedTopology: true   ❌ DEPRECATED
-            };
+        }
+    }
 
-            // Configure mongoose settings
-            mongoose.set('strictQuery', false);
-            mongoose.set('bufferCommands', false); // Set at mongoose level instead
-            
-            // Direct connection
-            await mongoose.connect(connectionString, options);
-            
-            // Update manager state
+    setupMongooseEventHandlers() {
+        mongoose.connection.on('error', (error) => {
+            logger.error(`❌ MongoDB connection error: ${error.message}`);
+            if (this.dbManager) {
+                this.dbManager.isConnected = false;
+            }
+        });
+
+        mongoose.connection.on('disconnected', () => {
+            logger.warn('⚠️ MongoDB disconnected');
+            if (this.dbManager) {
+                this.dbManager.isConnected = false;
+            }
+        });
+
+        mongoose.connection.on('reconnected', () => {
+            logger.info('✅ MongoDB reconnected');
             if (this.dbManager) {
                 this.dbManager.isConnected = true;
-                this.dbManager.connectionRetries = 0;
             }
-            
-            // FIXED: Setup event handlers (this was the missing method causing the primary error)
-            this.setupMongooseEventHandlers();
-            
-            logger.info('✅ Production MongoDB with smart reaction tracking initialized');
-            return; // Success!
-            
-        } catch (error) {
-            retryCount++;
-            logger.error(`❌ MongoDB connection attempt ${retryCount} failed: ${error.message}`);
-            
-            if (retryCount >= maxRetries) {
-                logger.error('❌ All MongoDB connection attempts failed');
-                logger.warn('⚠️ Continuing without MongoDB connection');
-                logger.warn('⚠️ Some features may not work until database is connected');
-                
-                // Set manager state to disconnected
-                if (this.dbManager) {
-                    this.dbManager.isConnected = false;
-                }
-                return;
+        });
+
+        mongoose.connection.on('connected', () => {
+            logger.info('🔗 MongoDB connected successfully');
+            if (this.dbManager) {
+                this.dbManager.isConnected = true;
             }
-        }
-    }
-}
-
-// ADD this missing method to your ProductionChurchSMS class:
-setupMongooseEventHandlers() {
-    mongoose.connection.on('error', (error) => {
-        logger.error(`❌ MongoDB connection error: ${error.message}`);
-        if (this.dbManager) {
-            this.dbManager.isConnected = false;
-        }
-    });
-
-    mongoose.connection.on('disconnected', () => {
-        logger.warn('⚠️ MongoDB disconnected');
-        if (this.dbManager) {
-            this.dbManager.isConnected = false;
-        }
-    });
-
-    mongoose.connection.on('reconnected', () => {
-        logger.info('✅ MongoDB reconnected');
-        if (this.dbManager) {
-            this.dbManager.isConnected = true;
-        }
-    });
-
-    mongoose.connection.on('connected', () => {
-        logger.info('🔗 MongoDB connected successfully');
-        if (this.dbManager) {
-            this.dbManager.isConnected = true;
-        }
-    });
-}
-
-// ALSO ADD this corrected buildMongoConnectionString method:
-buildMongoConnectionString() {
-    const {
-        uri, host, port, database, username, password, authSource
-    } = config.mongodb;
-
-    // If URI is provided, use it directly
-    if (uri && uri !== 'undefined' && !uri.includes('localhost')) {
-        logger.info('📋 Using provided MongoDB URI');
-        return uri;
+        });
     }
 
-    // Build connection string from components
-    let connectionString = 'mongodb://';
-    
-    if (username && password && username !== 'undefined' && password !== 'undefined') {
-        connectionString += `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`;
-    }
-    
-    connectionString += `${host || 'localhost'}:${port || '27017'}/${database || 'yesuway_church'}`;
-    
-    if (username && password && username !== 'undefined' && password !== 'undefined') {
-        connectionString += `?authSource=${authSource || 'admin'}`;
-    }
+    cleanPhoneNumber(phone) {
+        if (!phone) return null;
 
-    logger.info(`📋 Built MongoDB connection string for: ${host || 'localhost'}:${port || '27017'}`);
-    return connectionString;
-}
-
-cleanPhoneNumber(phone) {
-    if (!phone) return null;
-
-    const digits = phone.replace(/\D/g, '');
+        const digits = phone.replace(/\D/g, '');
 
         if (digits.length === 10) {
             return `+1${digits}`;
@@ -474,71 +404,6 @@ cleanPhoneNumber(phone) {
         } catch (error) {
             logger.error(`❌ Performance metric recording failed: ${error.message}`);
         }
-    }
-
-    detectReactionPattern(messageBody) {
-        if (!messageBody) return null;
-        
-        messageBody = messageBody.trim();
-        
-        // Industry-standard reaction patterns
-        const reactionPatterns = [
-            // Apple iPhone reactions
-            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s*["'"](.+)["'"]/,
-            // Android reactions
-            /^(Reacted\s*([\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}]+)\s*to)\s*["'"](.+)["'"]/u,
-            // Single emoji reactions
-            /^([\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}]+)\s*$/u,
-            // Generic reaction patterns
-            /^([\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}]+)\s*to\s*["'"](.+)["'"]/u,
-            // Text-based reactions
-            /^(👍|👎|❤️|😂|😢|😮|😡)\s*$/
-        ];
-
-        for (const pattern of reactionPatterns) {
-            const match = messageBody.match(pattern);
-            if (match) {
-                const groups = match.slice(1);
-                
-                let reactionType, targetMessage;
-                if (groups.length >= 2) {
-                    reactionType = groups[0];
-                    targetMessage = groups[groups.length - 1] || "";
-                } else {
-                    reactionType = groups[0];
-                    targetMessage = "";
-                }
-
-                // Map reaction types to emojis
-                const reactionMapping = {
-                    'Loved': '❤️',
-                    'Liked': '👍',
-                    'Disliked': '👎',
-                    'Laughed at': '😂',
-                    'Emphasized': '‼️',
-                    'Questioned': '❓'
-                };
-
-                let emoji = reactionMapping[reactionType] || reactionType;
-
-                // Extract emoji if reaction_type contains emoji
-                const emojiMatch = emoji.match(/([\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}]+)/u);
-                if (emojiMatch) {
-                    emoji = emojiMatch[1];
-                }
-
-                logger.info(`🎯 Industry reaction detected: '${emoji}' to message fragment: '${targetMessage.substring(0, 50)}...'`);
-
-                return {
-                    emoji: emoji,
-                    targetMessageFragment: targetMessage.substring(0, 100),
-                    reactionType: reactionType,
-                    fullPattern: messageBody
-                };
-            }
-        }
-
-        return null;
     }
 
     async getMemberInfo(phoneNumber) {
@@ -570,269 +435,6 @@ cleanPhoneNumber(phone) {
         }
     }
 
-    async storeReactionSilently(reactorPhone, reactionData, targetMessage) {
-        try {
-            if (!this.dbManager.isConnected) {
-                logger.warn('❌ Database not connected - cannot store reaction');
-                return false;
-            }
-
-            const reactor = await this.getMemberInfo(reactorPhone);
-            if (!reactor) {
-                logger.warn(`❌ Reaction from unregistered number: ${reactorPhone}`);
-                return false;
-            }
-
-            const targetMsgId = targetMessage._id;
-            const reactionEmoji = reactionData.emoji;
-            const reactionText = reactionData.fullPattern;
-
-            logger.info(`🔇 Storing silent reaction: ${reactor.name} reacted '${reactionEmoji}' to message ${targetMsgId}`);
-
-            // Store reaction silently
-            await this.dbManager.createReaction({
-                targetMessageId: targetMsgId,
-                reactorPhone: reactorPhone,
-                reactorName: reactor.name,
-                reactionEmoji: reactionEmoji,
-                reactionText: reactionText,
-                isProcessed: false
-            });
-
-            // Mark original message to track it has reactions
-            await this.dbManager.updateBroadcastMessage(targetMsgId, {
-                messageType: 'text_with_reactions'
-            });
-
-            logger.info('✅ Reaction stored silently - no broadcast sent');
-            return true;
-        } catch (error) {
-            logger.error(`❌ Error storing silent reaction: ${error.message}`);
-            return false;
-        }
-    }
-
-    startReactionScheduler() {
-        // Schedule daily summary at 8 PM
-        schedule.scheduleJob('0 20 * * *', () => {
-            this.sendDailyReactionSummary();
-        });
-
-        logger.info('✅ Smart reaction scheduler started - Daily summaries at 8 PM');
-    }
-
-    resetConversationPauseTimer() {
-        if (this.conversationPauseTimer) {
-            clearTimeout(this.conversationPauseTimer);
-        }
-
-        // Set timer for 30 minutes from now
-        this.conversationPauseTimer = setTimeout(() => {
-            this.sendPauseReactionSummary();
-        }, 30 * 60 * 1000); // 30 minutes
-
-        this.lastRegularMessageTime = new Date();
-        logger.debug('🕐 Conversation pause timer reset - 30 minutes');
-    }
-
-    async sendPauseReactionSummary() {
-        try {
-            if (!this.dbManager.isConnected) {
-                logger.warn('❌ Database not connected - cannot send pause summary');
-                return;
-            }
-
-            const sinceTime = new Date(Date.now() - 2 * 60 * 60 * 1000); // Last 2 hours
-            const reactions = await this.dbManager.getUnprocessedReactions(sinceTime);
-
-            if (reactions.length === 0) {
-                logger.info('🔇 No unprocessed reactions for pause summary');
-                return;
-            }
-
-            // Build smart summary
-            const summaryLines = ["📊 Recent reactions:"];
-            let messagesIncluded = 0;
-
-            // Group by message
-            const messageReactions = {};
-            for (const reaction of reactions) {
-                const targetId = reaction.targetMessageId._id.toString();
-                if (!messageReactions[targetId]) {
-                    messageReactions[targetId] = {
-                        fromName: reaction.targetMessageId.fromName,
-                        message: reaction.targetMessageId.originalMessage,
-                        reactions: {}
-                    };
-                }
-                
-                const emoji = reaction.reactionEmoji;
-                messageReactions[targetId].reactions[emoji] = (messageReactions[targetId].reactions[emoji] || 0) + 1;
-            }
-
-            for (const [targetId, msgData] of Object.entries(messageReactions)) {
-                messagesIncluded++;
-                const messagePreview = msgData.message.length > 40 
-                    ? msgData.message.substring(0, 40) + "..." 
-                    : msgData.message;
-
-                // Format reaction counts
-                const reactionParts = [];
-                for (const [emoji, count] of Object.entries(msgData.reactions)) {
-                    if (count === 1) {
-                        reactionParts.push(emoji);
-                    } else {
-                        reactionParts.push(`${emoji}×${count}`);
-                    }
-                }
-
-                const reactionDisplay = reactionParts.join(' ');
-                summaryLines.push(`💬 ${msgData.fromName}: "${messagePreview}" → ${reactionDisplay}`);
-            }
-
-            // Mark all reactions as processed
-            await this.dbManager.markReactionsAsProcessed(sinceTime);
-
-            // Store summary record
-            const summaryContent = summaryLines.join('\n');
-            await this.dbManager.createReactionSummary({
-                summaryType: 'pause_summary',
-                summaryContent: summaryContent,
-                messagesIncluded: messagesIncluded
-            });
-
-            // Broadcast summary to congregation
-            await this.broadcastSummaryToCongregation(summaryContent);
-
-            logger.info(`✅ Pause reaction summary sent - ${messagesIncluded} messages included`);
-        } catch (error) {
-            logger.error(`❌ Error sending pause reaction summary: ${error.message}`);
-        }
-    }
-
-    async sendDailyReactionSummary() {
-        try {
-            if (!this.dbManager.isConnected) {
-                logger.warn('❌ Database not connected - cannot send daily summary');
-                return;
-            }
-
-            const todayStart = new Date();
-            todayStart.setHours(0, 0, 0, 0);
-            
-            const reactions = await this.dbManager.getUnprocessedReactions(todayStart);
-
-            if (reactions.length === 0) {
-                logger.info('🔇 No reactions for daily summary');
-                return;
-            }
-
-            // Build comprehensive daily summary
-            const summaryLines = ["📊 TODAY'S REACTIONS:"];
-            let messagesIncluded = 0;
-            let totalReactions = 0;
-
-            // Group by message
-            const messageReactions = {};
-            for (const reaction of reactions) {
-                const targetId = reaction.targetMessageId._id.toString();
-                totalReactions++;
-                
-                if (!messageReactions[targetId]) {
-                    messageReactions[targetId] = {
-                        fromName: reaction.targetMessageId.fromName,
-                        message: reaction.targetMessageId.originalMessage,
-                        reactions: {},
-                        totalCount: 0
-                    };
-                }
-                
-                const emoji = reaction.reactionEmoji;
-                messageReactions[targetId].reactions[emoji] = (messageReactions[targetId].reactions[emoji] || 0) + 1;
-                messageReactions[targetId].totalCount++;
-            }
-
-            // Sort by total reaction count
-            const sortedMessages = Object.entries(messageReactions)
-                .sort(([,a], [,b]) => b.totalCount - a.totalCount)
-                .slice(0, 5); // Top 5 most reacted messages
-
-            for (const [targetId, msgData] of sortedMessages) {
-                messagesIncluded++;
-                const messagePreview = msgData.message.length > 50 
-                    ? msgData.message.substring(0, 50) + "..." 
-                    : msgData.message;
-
-                // Format reaction counts
-                const reactionParts = [];
-                for (const [emoji, count] of Object.entries(msgData.reactions)) {
-                    if (count === 1) {
-                        reactionParts.push(emoji);
-                    } else {
-                        reactionParts.push(`${emoji}×${count}`);
-                    }
-                }
-
-                const reactionDisplay = reactionParts.join(' ');
-                const totalForMsg = msgData.totalCount;
-                summaryLines.push(`• ${msgData.fromName}: "${messagePreview}" (${totalForMsg} reactions: ${reactionDisplay})`);
-            }
-
-            // Add engagement stats - count unique reactors
-            const uniqueReactors = new Set(reactions.map(r => r.reactorPhone));
-            summaryLines.push(`\n🎯 Today's engagement: ${totalReactions} reactions from ${uniqueReactors.size} members`);
-
-            // Mark all today's reactions as processed
-            await this.dbManager.markReactionsAsProcessed(todayStart);
-
-            // Store summary record
-            const summaryContent = summaryLines.join('\n');
-            await this.dbManager.createReactionSummary({
-                summaryType: 'daily_summary',
-                summaryContent: summaryContent,
-                messagesIncluded: messagesIncluded
-            });
-
-            // Broadcast summary to congregation
-            await this.broadcastSummaryToCongregation(summaryContent);
-
-            logger.info(`✅ Daily reaction summary sent - ${messagesIncluded} messages, ${totalReactions} reactions`);
-        } catch (error) {
-            logger.error(`❌ Error sending daily reaction summary: ${error.message}`);
-        }
-    }
-
-    async broadcastSummaryToCongregation(summaryContent) {
-        try {
-            const recipients = await this.getAllActiveMembers();
-
-            if (recipients.length === 0) {
-                logger.warn('❌ No active recipients for summary broadcast');
-                return;
-            }
-
-            logger.info(`📤 Broadcasting reaction summary to ${recipients.length} members`);
-
-            // Concurrent delivery of summary
-            const deliveryPromises = recipients.map(async (member) => {
-                try {
-                    const result = await this.sendSMS(member.phone, summaryContent);
-                    if (result.success) {
-                        logger.info(`✅ Summary delivered to ${member.name}`);
-                    } else {
-                        logger.error(`❌ Summary failed to ${member.name}: ${result.error}`);
-                    }
-                } catch (error) {
-                    logger.error(`❌ Summary delivery error to ${member.name}: ${error.message}`);
-                }
-            });
-
-            await Promise.allSettled(deliveryPromises);
-            logger.info('✅ Reaction summary broadcast completed');
-        } catch (error) {
-            logger.error(`❌ Error broadcasting summary: ${error.message}`);
-        }
-    }
     async downloadMediaFromTwilio(mediaUrl) {
         const startTime = Date.now();
         try {
@@ -948,7 +550,7 @@ cleanPhoneNumber(phone) {
                 publicUrl = this.r2Client.getSignedUrl('getObject', {
                     Bucket: config.r2.bucketName,
                     Key: objectKey,
-                    Expires: 31536000 // 1 year
+                    Expires: 31536000
                 });
             }
 
@@ -1009,7 +611,6 @@ cleanPhoneNumber(phone) {
                 );
 
                 if (publicUrl) {
-                    // Store media file record in MongoDB
                     if (this.dbManager.isConnected) {
                         await this.dbManager.createMediaFile({
                             messageId: messageId,
@@ -1140,221 +741,196 @@ cleanPhoneNumber(phone) {
         }
     }
 
-// CRITICAL FIX FOR BROADCAST MESSAGE WITH MEDIA
-// Replace the broadcastMessage method in your app.js with this fixed version
+    async broadcastMessage(fromPhone, messageText, mediaUrls = null) {
+        const startTime = Date.now();
+        logger.info(`📡 Starting broadcast from ${fromPhone}`);
 
-async broadcastMessage(fromPhone, messageText, mediaUrls = null) {
-    const startTime = Date.now();
-    logger.info(`📡 Starting broadcast from ${fromPhone}`);
+        let messageId = null;
 
-    // FIXED: Initialize messageId early to prevent undefined errors
-    let messageId = null;
+        try {
+            const sender = await this.getMemberInfo(fromPhone);
 
-    try {
-        const sender = await this.getMemberInfo(fromPhone);
-
-        if (!sender) {
-            logger.warn(`❌ Broadcast rejected - unregistered number: ${fromPhone}`);
-            return "You are not registered. Please contact church admin to be added to the system.";
-        }
-
-        const recipients = await this.getAllActiveMembers(fromPhone);
-
-        if (recipients.length === 0) {
-            logger.warn('❌ No active recipients found');
-            return "No active congregation members found for broadcast.";
-        }
-
-        // FIXED: Ensure messageText is never empty or undefined for database storage
-        if (!messageText || messageText.trim() === '') {
-            if (mediaUrls && mediaUrls.length > 0) {
-                messageText = `[Media content - ${mediaUrls.length} file(s)]`;
-            } else {
-                messageText = "[Empty message]";
+            if (!sender) {
+                logger.warn(`❌ Broadcast rejected - unregistered number: ${fromPhone}`);
+                return "You are not registered. Please contact church admin to be added to the system.";
             }
-        }
 
-        // FIXED: Store broadcast message in MongoDB with required fields
-        if (this.dbManager.isConnected) {
-            try {
-                const broadcastMessage = await this.dbManager.createBroadcastMessage({
-                    fromPhone: fromPhone,
-                    fromName: sender.name,
-                    originalMessage: messageText, // FIXED: Always provide this required field
-                    processedMessage: messageText, // FIXED: Always provide this required field
-                    messageType: mediaUrls && mediaUrls.length > 0 ? 'media' : 'text',
-                    hasMedia: Boolean(mediaUrls && mediaUrls.length > 0),
-                    mediaCount: mediaUrls ? mediaUrls.length : 0,
-                    processingStatus: 'processing',
-                    deliveryStatus: 'pending',
-                    isReaction: false,
-                    sentAt: new Date() // FIXED: Ensure sentAt is set
-                });
-                messageId = broadcastMessage._id.toString();
-                logger.info(`✅ Broadcast message stored with ID: ${messageId}`);
-            } catch (dbError) {
-                logger.error(`❌ Failed to store broadcast message: ${dbError.message}`);
-                // Continue without database storage but log the error
+            const recipients = await this.getAllActiveMembers(fromPhone);
+
+            if (recipients.length === 0) {
+                logger.warn('❌ No active recipients found');
+                return "No active congregation members found for broadcast.";
             }
-        }
 
-        // Process media if present
-        let cleanMediaLinks = [];
-        let largeMediaCount = 0;
-
-        if (mediaUrls && mediaUrls.length > 0) {
-            logger.info(`🔄 Processing ${mediaUrls.length} media files...`);
-            try {
-                const { processedLinks, processingErrors } = await this.processMediaFiles(messageId, mediaUrls);
-                cleanMediaLinks = processedLinks;
-                largeMediaCount = processedLinks.length;
-
-                if (processingErrors.length > 0) {
-                    logger.warn(`⚠️ Media processing errors: ${processingErrors.join(', ')}`);
-                }
-            } catch (mediaError) {
-                logger.error(`❌ Media processing failed: ${mediaError.message}`);
-                // Continue with text-only message
-            }
-        }
-
-        // Format final message
-        const finalMessage = this.formatMessageWithMedia(
-            messageText, sender, cleanMediaLinks
-        );
-
-        // Update message with processed content
-        if (this.dbManager.isConnected && messageId) {
-            try {
-                await this.dbManager.updateBroadcastMessage(messageId, {
-                    processedMessage: finalMessage,
-                    largeMediaCount: largeMediaCount,
-                    processingStatus: 'completed'
-                });
-            } catch (updateError) {
-                logger.error(`❌ Failed to update broadcast message: ${updateError.message}`);
-            }
-        }
-
-        // Reset conversation pause timer for regular messages
-        this.resetConversationPauseTimer();
-
-        // Broadcast with concurrent delivery
-        const deliveryStats = {
-            sent: 0,
-            failed: 0,
-            totalTime: 0,
-            errors: []
-        };
-
-        const sendPromises = recipients.map(async (member) => {
-            const memberStart = Date.now();
-            try {
-                const result = await this.sendSMS(member.phone, finalMessage);
-                const deliveryTime = Date.now() - memberStart;
-
-                // Log delivery in MongoDB
-                if (this.dbManager.isConnected && messageId) {
-                    try {
-                        await this.dbManager.createDeliveryLog({
-                            messageId: messageId,
-                            memberId: member.id,
-                            toPhone: member.phone,
-                            deliveryMethod: 'sms',
-                            deliveryStatus: result.success ? 'delivered' : 'failed',
-                            twilioMessageSid: result.sid || null,
-                            errorMessage: result.error || null,
-                            deliveryTimeMs: deliveryTime
-                        });
-                    } catch (deliveryLogError) {
-                        logger.error(`❌ Failed to log delivery: ${deliveryLogError.message}`);
-                    }
-                }
-
-                if (result.success) {
-                    deliveryStats.sent++;
-                    logger.info(`✅ Delivered to ${member.name}: ${result.sid}`);
+            if (!messageText || messageText.trim() === '') {
+                if (mediaUrls && mediaUrls.length > 0) {
+                    messageText = `[Media content - ${mediaUrls.length} file(s)]`;
                 } else {
-                    deliveryStats.failed++;
-                    deliveryStats.errors.push(`${member.name}: ${result.error}`);
-                    logger.error(`❌ Failed to ${member.name}: ${result.error}`);
+                    messageText = "[Empty message]";
                 }
-            } catch (error) {
-                deliveryStats.failed++;
-                deliveryStats.errors.push(`${member.name}: ${error.message}`);
-                logger.error(`❌ Delivery error to ${member.name}: ${error.message}`);
             }
-        });
 
-        logger.info(`📤 Starting concurrent delivery to ${recipients.length} recipients...`);
-        await Promise.allSettled(sendPromises);
-
-        // Calculate final stats
-        const totalTime = (Date.now() - startTime) / 1000;
-        deliveryStats.totalTime = totalTime;
-
-        // Update final delivery status
-        if (this.dbManager.isConnected && messageId) {
-            try {
-                await this.dbManager.updateBroadcastMessage(messageId, {
-                    deliveryStatus: 'completed'
-                });
-
-                // Record analytics
-                await this.dbManager.recordAnalytic('broadcast_delivery_rate',
-                    deliveryStats.sent / recipients.length * 100,
-                    `sent:${deliveryStats.sent},failed:${deliveryStats.failed},time:${totalTime.toFixed(2)}s`);
-
-                // Update sender message count
-                await this.dbManager.updateMemberActivity(fromPhone);
-            } catch (analyticsError) {
-                logger.error(`❌ Failed to record analytics: ${analyticsError.message}`);
+            if (this.dbManager.isConnected) {
+                try {
+                    const broadcastMessage = await this.dbManager.createBroadcastMessage({
+                        fromPhone: fromPhone,
+                        fromName: sender.name,
+                        originalMessage: messageText,
+                        processedMessage: messageText,
+                        messageType: mediaUrls && mediaUrls.length > 0 ? 'media' : 'text',
+                        hasMedia: Boolean(mediaUrls && mediaUrls.length > 0),
+                        mediaCount: mediaUrls ? mediaUrls.length : 0,
+                        processingStatus: 'processing',
+                        deliveryStatus: 'pending',
+                        sentAt: new Date()
+                    });
+                    messageId = broadcastMessage._id.toString();
+                    logger.info(`✅ Broadcast message stored with ID: ${messageId}`);
+                } catch (dbError) {
+                    logger.error(`❌ Failed to store broadcast message: ${dbError.message}`);
+                }
             }
+
+            let cleanMediaLinks = [];
+            let largeMediaCount = 0;
+
+            if (mediaUrls && mediaUrls.length > 0) {
+                logger.info(`🔄 Processing ${mediaUrls.length} media files...`);
+                try {
+                    const { processedLinks, processingErrors } = await this.processMediaFiles(messageId, mediaUrls);
+                    cleanMediaLinks = processedLinks;
+                    largeMediaCount = processedLinks.length;
+
+                    if (processingErrors.length > 0) {
+                        logger.warn(`⚠️ Media processing errors: ${processingErrors.join(', ')}`);
+                    }
+                } catch (mediaError) {
+                    logger.error(`❌ Media processing failed: ${mediaError.message}`);
+                }
+            }
+
+            const finalMessage = this.formatMessageWithMedia(
+                messageText, sender, cleanMediaLinks
+            );
+
+            if (this.dbManager.isConnected && messageId) {
+                try {
+                    await this.dbManager.updateBroadcastMessage(messageId, {
+                        processedMessage: finalMessage,
+                        largeMediaCount: largeMediaCount,
+                        processingStatus: 'completed'
+                    });
+                } catch (updateError) {
+                    logger.error(`❌ Failed to update broadcast message: ${updateError.message}`);
+                }
+            }
+
+            const deliveryStats = {
+                sent: 0,
+                failed: 0,
+                totalTime: 0,
+                errors: []
+            };
+
+            const sendPromises = recipients.map(async (member) => {
+                const memberStart = Date.now();
+                try {
+                    const result = await this.sendSMS(member.phone, finalMessage);
+                    const deliveryTime = Date.now() - memberStart;
+
+                    if (this.dbManager.isConnected && messageId) {
+                        try {
+                            await this.dbManager.createDeliveryLog({
+                                messageId: messageId,
+                                memberId: member.id,
+                                toPhone: member.phone,
+                                deliveryMethod: 'sms',
+                                deliveryStatus: result.success ? 'delivered' : 'failed',
+                                twilioMessageSid: result.sid || null,
+                                errorMessage: result.error || null,
+                                deliveryTimeMs: deliveryTime
+                            });
+                        } catch (deliveryLogError) {
+                            logger.error(`❌ Failed to log delivery: ${deliveryLogError.message}`);
+                        }
+                    }
+
+                    if (result.success) {
+                        deliveryStats.sent++;
+                        logger.info(`✅ Delivered to ${member.name}: ${result.sid}`);
+                    } else {
+                        deliveryStats.failed++;
+                        deliveryStats.errors.push(`${member.name}: ${result.error}`);
+                        logger.error(`❌ Failed to ${member.name}: ${result.error}`);
+                    }
+                } catch (error) {
+                    deliveryStats.failed++;
+                    deliveryStats.errors.push(`${member.name}: ${error.message}`);
+                    logger.error(`❌ Delivery error to ${member.name}: ${error.message}`);
+                }
+            });
+
+            logger.info(`📤 Starting concurrent delivery to ${recipients.length} recipients...`);
+            await Promise.allSettled(sendPromises);
+
+            const totalTime = (Date.now() - startTime) / 1000;
+            deliveryStats.totalTime = totalTime;
+
+            if (this.dbManager.isConnected && messageId) {
+                try {
+                    await this.dbManager.updateBroadcastMessage(messageId, {
+                        deliveryStatus: 'completed'
+                    });
+
+                    await this.dbManager.recordAnalytic('broadcast_delivery_rate',
+                        deliveryStats.sent / recipients.length * 100,
+                        `sent:${deliveryStats.sent},failed:${deliveryStats.failed},time:${totalTime.toFixed(2)}s`);
+
+                    await this.dbManager.updateMemberActivity(fromPhone);
+                } catch (analyticsError) {
+                    logger.error(`❌ Failed to record analytics: ${analyticsError.message}`);
+                }
+            }
+
+            const broadcastDurationMs = Math.round(totalTime * 1000);
+            await this.recordPerformanceMetric('broadcast_complete', broadcastDurationMs, true);
+
+            logger.info(`📊 Broadcast completed in ${totalTime.toFixed(2)}s: ${deliveryStats.sent} sent, ${deliveryStats.failed} failed`);
+
+            if (sender.isAdmin) {
+                let confirmation = `✅ Broadcast completed in ${totalTime.toFixed(1)}s\n`;
+                confirmation += `📊 Delivered: ${deliveryStats.sent}/${recipients.length}\n`;
+
+                if (largeMediaCount > 0) {
+                    confirmation += `📎 Clean media links: ${largeMediaCount}\n`;
+                }
+
+                if (deliveryStats.failed > 0) {
+                    confirmation += `⚠️ Failed deliveries: ${deliveryStats.failed}\n`;
+                }
+
+                return confirmation;
+            } else {
+                return null;
+            }
+        } catch (error) {
+            logger.error(`❌ Broadcast error: ${error.message}`);
+            logger.error(`❌ Broadcast stack trace: ${error.stack}`);
+
+            if (this.dbManager.isConnected && messageId) {
+                try {
+                    await this.dbManager.updateBroadcastMessage(messageId, {
+                        deliveryStatus: 'failed',
+                        processingStatus: 'error'
+                    });
+                } catch (dbError) {
+                    logger.error(`❌ Failed to update message status: ${dbError.message}`);
+                }
+            }
+
+            return "Broadcast failed - system administrators notified";
         }
-
-        // Record broadcast performance
-        const broadcastDurationMs = Math.round(totalTime * 1000);
-        await this.recordPerformanceMetric('broadcast_complete', broadcastDurationMs, true);
-
-        logger.info(`📊 Broadcast completed in ${totalTime.toFixed(2)}s: ${deliveryStats.sent} sent, ${deliveryStats.failed} failed`);
-
-        // Return confirmation to sender if admin
-        if (sender.isAdmin) {
-            let confirmation = `✅ Broadcast completed in ${totalTime.toFixed(1)}s\n`;
-            confirmation += `📊 Delivered: ${deliveryStats.sent}/${recipients.length}\n`;
-
-            if (largeMediaCount > 0) {
-                confirmation += `📎 Clean media links: ${largeMediaCount}\n`;
-            }
-
-            if (deliveryStats.failed > 0) {
-                confirmation += `⚠️ Failed deliveries: ${deliveryStats.failed}\n`;
-            }
-
-            confirmation += '🔇 Smart reaction tracking: Active';
-            return confirmation;
-        } else {
-            return null; // No confirmation for regular members
-        }
-    } catch (error) {
-        logger.error(`❌ Broadcast error: ${error.message}`);
-        logger.error(`❌ Broadcast stack trace: ${error.stack}`);
-
-        // Update message status to failed
-        if (this.dbManager.isConnected && messageId) {
-            try {
-                await this.dbManager.updateBroadcastMessage(messageId, {
-                    deliveryStatus: 'failed',
-                    processingStatus: 'error'
-                });
-            } catch (dbError) {
-                logger.error(`❌ Failed to update message status: ${dbError.message}`);
-            }
-        }
-
-        return "Broadcast failed - system administrators notified";
     }
-}
 
     async isAdmin(phoneNumber) {
         try {
@@ -1367,112 +943,72 @@ async broadcastMessage(fromPhone, messageText, mediaUrls = null) {
         }
     }
 
-// CRITICAL FIX FOR MEDIA PROCESSING ERRORS
-// Replace the handleIncomingMessage method in your app.js with this fixed version
+    async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
+        logger.info(`📨 Incoming message from ${fromPhone}`);
 
-async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
-    logger.info(`📨 Incoming message from ${fromPhone}`);
-
-    try {
-        fromPhone = this.cleanPhoneNumber(fromPhone);
-        
-        // FIXED: Ensure messageBody is never empty or undefined
-        messageBody = messageBody ? messageBody.trim() : "";
-        
-        // FIXED: For media-only messages, provide default text
-        if (!messageBody && mediaUrls && mediaUrls.length > 0) {
-            messageBody = `[Media content - ${mediaUrls.length} file(s)]`;
-        }
-        
-        // FIXED: Ensure messageBody has a minimum value
-        if (!messageBody) {
-            messageBody = "[Empty message]";
-        }
-
-        // Log media if present
-        if (mediaUrls && mediaUrls.length > 0) {
-            logger.info(`📎 Received ${mediaUrls.length} media files`);
-            for (let i = 0; i < mediaUrls.length; i++) {
-                const media = mediaUrls[i];
-                logger.info(`   Media ${i + 1}: ${media.type || 'unknown'} - ${media.url || 'no URL'}`);
+        try {
+            fromPhone = this.cleanPhoneNumber(fromPhone);
+            
+            messageBody = messageBody ? messageBody.trim() : "";
+            
+            if (!messageBody && mediaUrls && mediaUrls.length > 0) {
+                messageBody = `[Media content - ${mediaUrls.length} file(s)]`;
             }
-        }
+            
+            if (!messageBody) {
+                messageBody = "[Empty message]";
+            }
 
-        // Get member info - no auto-registration
-        const member = await this.getMemberInfo(fromPhone);
-
-        if (!member) {
-            logger.warn(`❌ Rejected message from unregistered number: ${fromPhone}`);
-            // Send rejection message
-            await this.sendSMS(
-                fromPhone,
-                "You are not registered in the church SMS system. Please contact a church administrator to be added."
-            );
-            return null;
-        }
-
-        logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
-
-        // CRITICAL: Detect reactions FIRST and handle silently
-        const reactionData = this.detectReactionPattern(messageBody);
-        if (reactionData) {
-            logger.info(`🔇 Silent reaction detected: ${member.name} reacted '${reactionData.emoji}'`);
-
-            // Find target message
-            const targetMessage = await this.dbManager.findTargetMessageForReaction(
-                reactionData.targetMessageFragment,
-                fromPhone
-            );
-
-            if (targetMessage) {
-                // Store reaction silently - NO BROADCAST
-                const success = await this.storeReactionSilently(fromPhone, reactionData, targetMessage);
-                if (success) {
-                    logger.info('✅ Reaction stored silently - will appear in next summary');
-                    return null; // No response, no broadcast - completely silent
-                } else {
-                    logger.error('❌ Failed to store reaction silently');
-                    return null;
+            if (mediaUrls && mediaUrls.length > 0) {
+                logger.info(`📎 Received ${mediaUrls.length} media files`);
+                for (let i = 0; i < mediaUrls.length; i++) {
+                    const media = mediaUrls[i];
+                    logger.info(`   Media ${i + 1}: ${media.type || 'unknown'} - ${media.url || 'no URL'}`);
                 }
-            } else {
-                logger.warn('⚠️ Could not find target message for reaction');
-                return null; // Still silent even if target not found
             }
-        }
 
-        // Handle member commands
-        if (messageBody.toUpperCase() === 'HELP') {
-            return (
-                "📋 YESUWAY CHURCH SMS SYSTEM\n\n" +
-                "✅ Send messages to entire congregation\n" +
-                "✅ Share photos/videos (unlimited size)\n" +
-                "✅ Clean media links (no technical details)\n" +
-                "✅ Full quality preserved automatically\n" +
-                "✅ Smart reaction tracking (silent)\n\n" +
-                "📱 Text HELP for this message\n" +
-                "🔇 Reactions tracked silently - summaries at 8 PM daily\n" +
-                "🏛️ Production system - serving 24/7\n" +
-                "🗄️ Powered by MongoDB for scalable performance"
-            );
-        }
+            const member = await this.getMemberInfo(fromPhone);
 
-        // Default: Broadcast regular message
-        logger.info('📡 Processing regular message broadcast...');
-        return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
-    } catch (error) {
-        logger.error(`❌ Message processing error: ${error.message}`);
-        logger.error(`❌ Stack trace: ${error.stack}`);
-        return "Message processing temporarily unavailable - please try again";
+            if (!member) {
+                logger.warn(`❌ Rejected message from unregistered number: ${fromPhone}`);
+                await this.sendSMS(
+                    fromPhone,
+                    "You are not registered in the church SMS system. Please contact a church administrator to be added."
+                );
+                return null;
+            }
+
+            logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
+
+            if (messageBody.toUpperCase() === 'HELP') {
+                return (
+                    "📋 YESUWAY CHURCH SMS SYSTEM\n\n" +
+                    "✅ Send messages to entire congregation\n" +
+                    "✅ Share photos/videos (unlimited size)\n" +
+                    "✅ Clean media links (no technical details)\n" +
+                    "✅ Full quality preserved automatically\n\n" +
+                    "📱 Text HELP for this message\n" +
+                    "🏛️ Production system - serving 24/7\n" +
+                    "🗄️ Powered by MongoDB for scalable performance"
+                );
+            }
+
+            logger.info('📡 Processing message broadcast...');
+            return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
+        } catch (error) {
+            logger.error(`❌ Message processing error: ${error.message}`);
+            logger.error(`❌ Stack trace: ${error.stack}`);
+            return "Message processing temporarily unavailable - please try again";
+        }
     }
-}
 }
 
 // Initialize production system
-logger.info('STARTING: Initializing Production Church SMS System with MongoDB and Smart Reaction Tracking...');
+logger.info('STARTING: Initializing Production Church SMS System with MongoDB...');
 let smsSystem;
 try {
     smsSystem = new ProductionChurchSMS();
-    logger.info('SUCCESS: Production system with MongoDB and smart reaction tracking fully operational');
+    logger.info('SUCCESS: Production system with MongoDB fully operational');
 } catch (error) {
     logger.error(`CRITICAL: Production system failed to initialize: ${error.message}`);
     if (!config.development) {
@@ -1489,7 +1025,6 @@ async function setupProductionCongregation() {
             return;
         }
 
-        // Get groups for reference
         const congregationGroup = await smsSystem.dbManager.getGroupByName("YesuWay Congregation");
         const leadershipGroup = await smsSystem.dbManager.getGroupByName("Church Leadership");
         const mediaGroup = await smsSystem.dbManager.getGroupByName("Media Team");
@@ -1499,7 +1034,6 @@ async function setupProductionCongregation() {
             return;
         }
 
-        // Add primary admin
         const adminPhone = smsSystem.cleanPhoneNumber("+14257729189");
         let admin = await smsSystem.dbManager.getMemberByPhone(adminPhone);
         
@@ -1520,7 +1054,6 @@ async function setupProductionCongregation() {
             logger.info(`ℹ️ Admin already exists: ${admin.name}`);
         }
 
-        // Add production members
         const productionMembers = [
             { phone: "+12068001141", name: "Mike", groupName: "YesuWay Congregation" },
             { phone: "+14257729189", name: "Sam", groupName: "YesuWay Congregation" },
@@ -1532,7 +1065,6 @@ async function setupProductionCongregation() {
             const cleanPhone = smsSystem.cleanPhoneNumber(memberData.phone);
             let member = await smsSystem.dbManager.getMemberByPhone(cleanPhone);
             
-            // Get target group
             let targetGroup;
             switch (memberData.groupName) {
                 case "YesuWay Congregation":
@@ -1562,7 +1094,6 @@ async function setupProductionCongregation() {
                 });
                 logger.info(`✅ Added member: ${memberData.name} (${cleanPhone}) to ${targetGroup.name}`);
             } else {
-                // Check if member is already in the target group
                 const isInGroup = member.groups.some(g => g.groupId.toString() === targetGroup._id.toString());
                 if (!isInGroup) {
                     await smsSystem.dbManager.addMemberToGroup(member._id, targetGroup._id);
@@ -1579,9 +1110,7 @@ async function setupProductionCongregation() {
     }
 }
 
-// ===== EXPRESS ROUTES =====
-
-// Request monitoring middleware
+// Express Routes
 app.use((req, res, next) => {
     req.startTime = Date.now();
     next();
@@ -1615,7 +1144,6 @@ app.post('/webhook/sms', async (req, res) => {
     logger.info(`🌐 [${requestId}] SMS webhook called`);
 
     try {
-        // Extract webhook data
         const fromNumber = (req.body.From || '').trim();
         const messageBody = (req.body.Body || '').trim();
         const numMedia = parseInt(req.body.NumMedia || 0);
@@ -1628,7 +1156,6 @@ app.post('/webhook/sms', async (req, res) => {
             return res.status(200).send('OK');
         }
 
-        // Extract media URLs
         const mediaUrls = [];
         for (let i = 0; i < numMedia; i++) {
             const mediaUrl = req.body[`MediaUrl${i}`];
@@ -1644,14 +1171,12 @@ app.post('/webhook/sms', async (req, res) => {
             }
         }
 
-        // Process message asynchronously
         const processAsync = async () => {
             try {
                 const response = await smsSystem.handleIncomingMessage(
                     fromNumber, messageBody, mediaUrls
                 );
 
-                // Send response if needed (reactions return null - no response)
                 if (response && await smsSystem.isAdmin(fromNumber)) {
                     const result = await smsSystem.sendSMS(fromNumber, response);
                     if (result.success) {
@@ -1665,10 +1190,8 @@ app.post('/webhook/sms', async (req, res) => {
             }
         };
 
-        // Start async processing (don't await)
         processAsync();
 
-        // Return immediate response to Twilio
         const processingTime = Math.round(Date.now() - requestStart);
         logger.info(`⚡ [${requestId}] Webhook completed in ${processingTime}ms`);
 
@@ -1725,11 +1248,10 @@ app.get('/health', async (req, res) => {
         const healthData = {
             status: "healthy",
             timestamp: new Date().toISOString(),
-            version: "Production Church SMS System with MongoDB and Smart Reaction Tracking v4.0",
+            version: "Production Church SMS System with MongoDB v4.0",
             environment: "production"
         };
 
-        // Test MongoDB
         try {
             if (smsSystem.dbManager.isConnected) {
                 const stats = await smsSystem.dbManager.getHealthStats();
@@ -1745,7 +1267,6 @@ app.get('/health', async (req, res) => {
             healthData.mongodb = { status: "error", error: error.message };
         }
 
-        // Test Twilio
         try {
             if (smsSystem.twilioClient) {
                 const account = await smsSystem.twilioClient.api.accounts(config.twilio.accountSid).fetch();
@@ -1761,7 +1282,6 @@ app.get('/health', async (req, res) => {
             healthData.twilio = { status: "error", error: error.message };
         }
 
-        // Test R2
         try {
             if (smsSystem.r2Client) {
                 await smsSystem.r2Client.headBucket({ Bucket: config.r2.bucketName }).promise();
@@ -1776,18 +1296,10 @@ app.get('/health', async (req, res) => {
             healthData.r2_storage = { status: "error", error: error.message };
         }
 
-        healthData.smart_reaction_system = {
-            status: "active",
-            silent_tracking: "enabled",
-            daily_summary_time: "8:00 PM",
-            pause_summary_trigger: "30 minutes silence"
-        };
-
         healthData.features = {
             clean_media_display: "enabled",
             manual_registration_only: "enabled",
             auto_registration: "disabled",
-            smart_reaction_tracking: "enabled",
             mongodb_storage: "enabled",
             admin_commands: "disabled"
         };
@@ -1802,12 +1314,12 @@ app.get('/health', async (req, res) => {
         });
     }
 });
+
 app.get('/', async (req, res) => {
     try {
         let stats = {
             activeMemberCount: 0,
             recentMessages24h: 0,
-            recentReactions24h: 0,
             processedMediaCount: 0
         };
 
@@ -1819,22 +1331,14 @@ app.get('/', async (req, res) => {
 🏛️ YesuWay Church SMS Broadcasting System
 📅 Production Environment - ${new Date().toLocaleString()}
 
-🚀 PRODUCTION STATUS: MONGODB & SMART REACTION TRACKING ACTIVE
+🚀 PRODUCTION STATUS: MONGODB ACTIVE
 
 📊 LIVE STATISTICS:
 ✅ Registered Members: ${stats.activeMemberCount}
 ✅ Messages (24h): ${stats.recentMessages24h}
-✅ Silent Reactions (24h): ${stats.recentReactions24h}
 ✅ Media Files Processed: ${stats.processedMediaCount}
 ✅ Church Number: ${config.twilio.phoneNumber}
 ✅ Database: MongoDB ${smsSystem.dbManager.isConnected ? 'Connected' : 'Disconnected'}
-
-🔇 SMART REACTION SYSTEM:
-✅ SILENT TRACKING - No reaction spam to congregation
-✅ DAILY SUMMARIES - Sent every day at 8:00 PM
-✅ PAUSE SUMMARIES - After 30 minutes of conversation silence
-✅ INDUSTRY PATTERNS - Detects all major reaction formats
-✅ SMART MATCHING - Links reactions to correct messages
 
 🗄️ MONGODB FEATURES:
 ✅ SCALABLE DOCUMENT STORAGE
@@ -1868,17 +1372,9 @@ app.get('/', async (req, res) => {
 • Only registered members can send
 • Unknown numbers receive rejection
 • Large files become clean links
-• Reactions tracked silently
-• Daily summaries of engagement
 • Professional presentation
 
-🕐 REACTION SUMMARY SCHEDULE:
-• Daily at 8:00 PM - Top reacted messages
-• After 30min silence - Recent activity
-
-🎯 RESULT: Zero reaction spam + Full engagement tracking!
-
-💚 SERVING YOUR CONGREGATION 24/7 - SMART & SILENT WITH MONGODB
+💚 SERVING YOUR CONGREGATION 24/7 - PROFESSIONAL WITH MONGODB
         `;
 
         res.set('Content-Type', 'text/plain; charset=utf-8');
@@ -1897,9 +1393,6 @@ app.all('/test', async (req, res) => {
 
             logger.info(`🧪 Test message: ${fromNumber} -> ${messageBody}`);
 
-            // Test reaction detection
-            const reactionData = smsSystem.detectReactionPattern(messageBody);
-
             const testAsync = async () => {
                 try {
                     const result = await smsSystem.handleIncomingMessage(fromNumber, messageBody, []);
@@ -1909,18 +1402,14 @@ app.all('/test', async (req, res) => {
                 }
             };
 
-            // Start async processing
             testAsync();
 
             res.json({
                 status: "✅ Test processed",
                 from: fromNumber,
                 body: messageBody,
-                reaction_detected: reactionData !== null,
-                reaction_data: reactionData,
                 timestamp: new Date().toISOString(),
                 processing: "async",
-                smart_reaction_system: "active",
                 admin_commands: "disabled",
                 database: smsSystem.dbManager.isConnected ? "MongoDB Connected" : "MongoDB Disconnected"
             });
@@ -1936,24 +1425,15 @@ app.all('/test', async (req, res) => {
                 features: [
                     "Clean media display", 
                     "Manual registration only", 
-                    "Smart reaction tracking", 
                     "No admin commands",
                     "MongoDB storage",
                     "Scalable performance"
                 ],
-                reaction_patterns: [
-                    "Loved \"message text\"",
-                    "Laughed at \"message text\"",
-                    "Emphasized \"message text\"",
-                    "Reacted 😍 to \"message text\"",
-                    "❤️",
-                    "😂"
-                ],
                 test_examples: [
-                    "curl -X POST /test -d 'From=+1234567890&Body=Loved \"test message\"'",
-                    "curl -X POST /test -d 'From=+1234567890&Body=😂'"
+                    "curl -X POST /test -d 'From=+1234567890&Body=Test message'",
+                    "curl -X POST /test -d 'From=+1234567890&Body=Hello everyone'"
                 ],
-                usage: "POST with From and Body parameters to test reaction detection"
+                usage: "POST with From and Body parameters to test message broadcasting"
             });
         }
     } catch (error) {
@@ -1962,7 +1442,6 @@ app.all('/test', async (req, res) => {
     }
 });
 
-// Add diagnostic endpoint for debugging
 app.get('/debug', async (req, res) => {
     try {
         if (!smsSystem.dbManager.isConnected) {
@@ -1973,16 +1452,9 @@ app.get('/debug', async (req, res) => {
             });
         }
 
-        // Get all members
         const members = await smsSystem.dbManager.getAllActiveMembers();
-        
-        // Get recent messages
-        const recentMessages = await smsSystem.dbManager.getRecentMessages(24, false);
-        
-        // Get delivery stats
+        const recentMessages = await smsSystem.dbManager.getRecentMessages(24);
         const deliveryStats = await smsSystem.dbManager.getDeliveryStats();
-        
-        // Get health stats
         const healthStats = await smsSystem.dbManager.getHealthStats();
         
         res.json({
@@ -2019,7 +1491,6 @@ app.get('/debug', async (req, res) => {
                     "Members not in MongoDB database",
                     "Phone numbers not properly formatted", 
                     "Twilio credentials not working",
-                    "Messages being rejected as reactions",
                     "MongoDB connection issues"
                 ]
             }
@@ -2035,7 +1506,6 @@ app.get('/debug', async (req, res) => {
     }
 });
 
-// Add database setup/recovery endpoint
 app.post('/setup', async (req, res) => {
     try {
         logger.info('🔧 Manual database setup/recovery initiated...');
@@ -2049,10 +1519,8 @@ app.post('/setup', async (req, res) => {
             });
         }
 
-        // Setup production congregation
         await setupProductionCongregation();
         
-        // Verify setup
         const stats = await smsSystem.dbManager.getHealthStats();
         const groups = await smsSystem.dbManager.getAllGroups();
         
@@ -2085,7 +1553,6 @@ app.post('/setup', async (req, res) => {
     }
 });
 
-// Add analytics endpoint
 app.get('/analytics', async (req, res) => {
     try {
         if (!smsSystem.dbManager.isConnected) {
@@ -2098,14 +1565,12 @@ app.get('/analytics', async (req, res) => {
         const healthStats = await smsSystem.dbManager.getHealthStats();
         const deliveryStats = await smsSystem.dbManager.getDeliveryStats();
         
-        // Get recent performance metrics
         const performanceData = await PerformanceMetrics.find({
             recordedAt: { 
                 $gt: new Date(Date.now() - 24 * 60 * 60 * 1000) 
             }
         }).sort({ recordedAt: -1 }).limit(100);
 
-        // Get recent analytics
         const analyticsData = await SystemAnalytics.find({
             recordedAt: { 
                 $gt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) 
@@ -2185,18 +1650,14 @@ process.on('SIGINT', async () => {
 
 // Start the server with enhanced error handling
 async function startServer() {
-    logger.info('STARTING: Production Church SMS System with MongoDB and Smart Reaction Tracking...');
+    logger.info('STARTING: Production Church SMS System with MongoDB...');
     logger.info('INFO: Professional church communication platform');
     logger.info('INFO: Clean media presentation enabled');
     logger.info('INFO: Manual registration only - secure access');
-    logger.info('INFO: Smart reaction tracking - silent with summaries');
-    logger.info('INFO: Daily summaries at 8:00 PM');
-    logger.info('INFO: Pause summaries after 30min silence');
     logger.info('INFO: Auto-registration disabled');
     logger.info('INFO: SMS admin commands disabled');
     logger.info('INFO: MongoDB database for scalable performance');
 
-    // Environment validation (non-blocking in production)
     const validationWarnings = [];
     
     if (!smsSystem.isValidTwilioCredentials()) {
@@ -2211,7 +1672,6 @@ async function startServer() {
         validationWarnings.push('MongoDB credentials not configured - using localhost defaults');
     }
 
-    // Log warnings but continue startup
     if (validationWarnings.length > 0) {
         logger.warn('⚠️ CONFIGURATION WARNINGS:');
         validationWarnings.forEach(warning => logger.warn(`   • ${warning}`));
@@ -2234,12 +1694,10 @@ async function startServer() {
         logger.info('');
     }
 
-    // Setup congregation (always safe to run)
     try {
         await setupProductionCongregation();
     } catch (error) {
         logger.error(`❌ Congregation setup failed: ${error.message}`);
-        // Continue anyway - database might already be set up
     }
 
     logger.info('SUCCESS: Production Church SMS System: READY FOR MESSAGING');
@@ -2252,13 +1710,10 @@ async function startServer() {
     logger.info('INFO: Enterprise-grade system active');
     logger.info('INFO: Clean media display enabled');
     logger.info('INFO: Secure member registration (MongoDB only)');
-    logger.info('INFO: Smart reaction tracking active');
-    logger.info('INFO: Reaction summaries: Daily 8 PM + 30min pause');
     logger.info('INFO: Admin commands completely removed');
     logger.info('INFO: Serving YesuWay Church congregation');
     logger.info('INFO: MongoDB database for scalable performance');
 
-    // Start server
     const server = app.listen(config.port, '0.0.0.0', () => {
         logger.info(`🚀 Production Church SMS System running on port ${config.port}`);
         
@@ -2269,10 +1724,9 @@ async function startServer() {
             logger.info('   Set production credentials to enable full functionality');
         }
         
-        logger.info('💚 SERVING YOUR CONGREGATION 24/7 - SMART & RESILIENT WITH MONGODB');
+        logger.info('💚 SERVING YOUR CONGREGATION 24/7 - PROFESSIONAL WITH MONGODB');
     });
 
-    // Graceful shutdown handling
     const gracefulShutdown = async (signal) => {
         logger.info(`${signal} received, shutting down gracefully`);
         server.close(async () => {
@@ -2283,7 +1737,6 @@ async function startServer() {
             process.exit(0);
         });
         
-        // Force shutdown after 10 seconds
         setTimeout(() => {
             logger.error('Forced shutdown after timeout');
             process.exit(1);
@@ -2293,7 +1746,6 @@ async function startServer() {
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-    // Handle uncaught exceptions gracefully
     process.on('uncaughtException', (error) => {
         logger.error('Uncaught Exception:', error);
         gracefulShutdown('UNCAUGHT_EXCEPTION');
@@ -2301,7 +1753,6 @@ async function startServer() {
 
     process.on('unhandledRejection', (reason, promise) => {
         logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
-        // Don't exit on unhandled rejections in production
         if (config.environment === 'production') {
             logger.warn('Continuing operation despite unhandled rejection');
         } else {
@@ -2310,24 +1761,18 @@ async function startServer() {
     });
 }
 
-// Initialize and start with robust error handling
 (async () => {
     try {
-        // SMS system is already initialized above
-        logger.info('SUCCESS: Production system with MongoDB and smart reaction tracking initialized');
-        
-        // Start server
+        logger.info('SUCCESS: Production system with MongoDB initialized');
         await startServer();
         
     } catch (error) {
         logger.error(`❌ Critical startup failure: ${error.message}`);
         logger.error('Stack trace:', error.stack);
         
-        // In production, try to continue with limited functionality
         if (config.environment === 'production') {
             logger.warn('🔄 Attempting to continue with limited functionality...');
             try {
-                // Minimal server startup
                 app.listen(config.port, '0.0.0.0', () => {
                     logger.info(`🚨 Emergency mode: Server running on port ${config.port}`);
                     logger.warn('⚠️ Limited functionality due to initialization errors');
@@ -2337,7 +1782,6 @@ async function startServer() {
                 process.exit(1);
             }
         } else {
-            // In development, exit with error
             process.exit(1);
         }
     }

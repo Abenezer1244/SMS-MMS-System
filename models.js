@@ -90,7 +90,7 @@ const broadcastMessageSchema = new Schema({
     },
     messageType: {
         type: String,
-        enum: ['text', 'media', 'text_with_reactions'],
+        enum: ['text', 'media'],
         default: 'text'
     },
     hasMedia: {
@@ -115,16 +115,6 @@ const broadcastMessageSchema = new Schema({
         enum: ['pending', 'sending', 'completed', 'failed'],
         default: 'pending'
     },
-    isReaction: {
-        type: Boolean,
-        default: false,
-        index: true
-    },
-    targetMessageId: {
-        type: Schema.Types.ObjectId,
-        ref: 'BroadcastMessage',
-        index: true
-    },
     sentAt: {
         type: Date,
         default: Date.now,
@@ -133,64 +123,6 @@ const broadcastMessageSchema = new Schema({
 }, {
     timestamps: true,
     collection: 'broadcast_messages'
-});
-
-// Message Reaction Schema
-const messageReactionSchema = new Schema({
-    targetMessageId: {
-        type: Schema.Types.ObjectId,
-        ref: 'BroadcastMessage',
-        required: true,
-        index: true
-    },
-    reactorPhone: {
-        type: String,
-        required: true
-    },
-    reactorName: {
-        type: String,
-        required: true
-    },
-    reactionEmoji: {
-        type: String,
-        required: true
-    },
-    reactionText: {
-        type: String,
-        required: true
-    },
-    isProcessed: {
-        type: Boolean,
-        default: false,
-        index: true
-    }
-}, {
-    timestamps: true,
-    collection: 'message_reactions'
-});
-
-// Reaction Summary Schema
-const reactionSummarySchema = new Schema({
-    summaryType: {
-        type: String,
-        enum: ['daily_summary', 'pause_summary'],
-        required: true
-    },
-    summaryContent: {
-        type: String,
-        required: true
-    },
-    messagesIncluded: {
-        type: Number,
-        default: 0
-    },
-    sentAt: {
-        type: Date,
-        default: Date.now
-    }
-}, {
-    timestamps: true,
-    collection: 'reaction_summaries'
 });
 
 // Media File Schema
@@ -369,10 +301,8 @@ const performanceMetricsSchema = new Schema({
 groupSchema.index({ active: 1, name: 1 });
 memberSchema.index({ active: 1, phoneNumber: 1 });
 memberSchema.index({ 'groups.groupId': 1 });
-broadcastMessageSchema.index({ sentAt: -1, isReaction: 1 });
+broadcastMessageSchema.index({ sentAt: -1 });
 broadcastMessageSchema.index({ fromPhone: 1, sentAt: -1 });
-messageReactionSchema.index({ targetMessageId: 1, isProcessed: 1 });
-messageReactionSchema.index({ createdAt: -1 });
 deliveryLogSchema.index({ messageId: 1, deliveryStatus: 1 });
 systemAnalyticsSchema.index({ metricName: 1, recordedAt: -1 });
 performanceMetricsSchema.index({ operationType: 1, recordedAt: -1 });
@@ -381,8 +311,6 @@ performanceMetricsSchema.index({ operationType: 1, recordedAt: -1 });
 const Group = mongoose.model('Group', groupSchema);
 const Member = mongoose.model('Member', memberSchema);
 const BroadcastMessage = mongoose.model('BroadcastMessage', broadcastMessageSchema);
-const MessageReaction = mongoose.model('MessageReaction', messageReactionSchema);
-const ReactionSummary = mongoose.model('ReactionSummary', reactionSummarySchema);
 const MediaFile = mongoose.model('MediaFile', mediaFileSchema);
 const DeliveryLog = mongoose.model('DeliveryLog', deliveryLogSchema);
 const SystemAnalytics = mongoose.model('SystemAnalytics', systemAnalyticsSchema);
@@ -392,8 +320,6 @@ module.exports = {
     Group,
     Member,
     BroadcastMessage,
-    MessageReaction,
-    ReactionSummary,
     MediaFile,
     DeliveryLog,
     SystemAnalytics,

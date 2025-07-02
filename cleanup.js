@@ -15,15 +15,12 @@ const {
     Group,
     Member,
     BroadcastMessage,
-    MessageReaction,
-    ReactionSummary,
     MediaFile,
     DeliveryLog,
     SystemAnalytics,
     PerformanceMetrics
 } = require('./models');
 
-// Load environment variables
 require('dotenv').config();
 
 console.log('🧹 YesuWay Church SMS System - Production Database Cleanup');
@@ -91,7 +88,7 @@ class ProductionCleanup {
         try {
             const members = await Member.find({}).populate('groups.groupId');
             const groups = await Group.find({});
-            const messages = await BroadcastMessage.find({}).limit(100); // Last 100 messages
+            const messages = await BroadcastMessage.find({}).limit(100);
             
             const backup = {
                 timestamp: new Date().toISOString(),
@@ -100,7 +97,6 @@ class ProductionCleanup {
                 recentMessages: messages
             };
 
-            // Save backup to file
             const fs = require('fs');
             const backupFilename = `backup_${new Date().toISOString().replace(/[:.]/g, '')}.json`;
             
@@ -121,7 +117,6 @@ class ProductionCleanup {
         console.log('📋 Removing test/demo members...');
         
         try {
-            // List of test/demo phone numbers to remove
             const testPhoneNumbers = [
                 '+12068001141', // Mike/michael
                 '+14257729189', // Sam/mike  
@@ -135,17 +130,14 @@ class ProductionCleanup {
 
             console.log('🔍 Identifying test members...');
             
-            // Find members by phone numbers
             const membersByPhone = await Member.find({
                 phoneNumber: { $in: testPhoneNumbers }
             });
 
-            // Find members by test names  
             const membersByName = await Member.find({
                 name: { $in: testNames }
             });
 
-            // Combine and deduplicate
             const allTestMembers = [...membersByPhone, ...membersByName];
             const uniqueTestMembers = allTestMembers.filter((member, index, self) => 
                 index === self.findIndex(m => m._id.toString() === member._id.toString())
@@ -161,7 +153,6 @@ class ProductionCleanup {
                 console.log(`   • ${member.name} (${member.phoneNumber})`);
             }
 
-            // Get admin confirmation
             const readline = require('readline');
             const rl = readline.createInterface({
                 input: process.stdin,
@@ -180,14 +171,9 @@ class ProductionCleanup {
                 return;
             }
 
-            // Remove test members
             for (const member of uniqueTestMembers) {
-                // Remove related data first
-                await MessageReaction.deleteMany({ reactorPhone: member.phoneNumber });
                 await BroadcastMessage.deleteMany({ fromPhone: member.phoneNumber });
                 await DeliveryLog.deleteMany({ toPhone: member.phoneNumber });
-                
-                // Remove the member
                 await Member.findByIdAndDelete(member._id);
                 
                 console.log(`✅ Removed: ${member.name} (${member.phoneNumber})`);
@@ -205,20 +191,14 @@ class ProductionCleanup {
         console.log('📋 Cleaning up test data and metrics...');
         
         try {
-            // Remove test analytics
             await SystemAnalytics.deleteMany({
                 metricName: { $regex: /test|demo|setup_test/i }
             });
 
-            // Remove test performance metrics
             await PerformanceMetrics.deleteMany({
                 operationType: { $regex: /test|demo|setup_test/i }
             });
 
-            // Remove old reaction summaries
-            await ReactionSummary.deleteMany({});
-
-            // Remove orphaned media files
             const orphanedMedia = await MediaFile.find({
                 messageId: { $exists: false }
             });
@@ -250,7 +230,6 @@ class ProductionCleanup {
             console.log(`   Groups: ${groups.length}`);
             console.log(`   Active Members: ${stats.activeMemberCount}`);
             console.log(`   Recent Messages: ${stats.recentMessages24h}`);
-            console.log(`   Recent Reactions: ${stats.recentReactions24h}`);
             
             if (members.length > 0) {
                 console.log('\n👥 Remaining Members:');
@@ -303,6 +282,5 @@ class ProductionCleanup {
     }
 }
 
-// Run cleanup
 const cleanup = new ProductionCleanup();
 cleanup.run();

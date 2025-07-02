@@ -15,8 +15,6 @@ const {
     Group,
     Member,
     BroadcastMessage,
-    MessageReaction,
-    ReactionSummary,
     MediaFile,
     DeliveryLog,
     SystemAnalytics,
@@ -47,13 +45,11 @@ class ProductionSetup {
     }
 
     buildConnectionString() {
-        // Priority: Use MONGODB_URI if provided, otherwise build from components
         if (process.env.MONGODB_URI && process.env.MONGODB_URI !== 'undefined') {
             console.log('📋 Using provided MONGODB_URI');
             return process.env.MONGODB_URI;
         }
 
-        // Build connection string from individual components
         const {
             MONGODB_HOST = 'localhost',
             MONGODB_PORT = '27017',
@@ -113,7 +109,6 @@ class ProductionSetup {
                     await new Promise(resolve => setTimeout(resolve, delay));
                 }
 
-                // FIXED: Use only supported MongoDB connection options
                 const options = {
                     maxPoolSize: 10,
                     serverSelectionTimeoutMS: 10000,
@@ -121,8 +116,6 @@ class ProductionSetup {
                     connectTimeoutMS: 15000,
                     retryWrites: true,
                     retryReads: true
-                    // REMOVED deprecated options that cause errors:
-                    // bufferCommands, bufferMaxEntries, useNewUrlParser, useUnifiedTopology
                 };
 
                 mongoose.set('strictQuery', false);
@@ -131,14 +124,11 @@ class ProductionSetup {
                 await this.dbManager.connect(this.connectionString, options);
                 console.log('✅ MongoDB connection established successfully');
                 
-                // FIXED: Test connection without requiring admin permissions
                 try {
-                    // Simple test that doesn't require admin permissions
                     const collections = await mongoose.connection.db.listCollections().toArray();
                     console.log(`📊 Database accessible with ${collections.length} collections`);
                     console.log(`🗄️ Database Name: ${mongoose.connection.name}`);
                 } catch (testError) {
-                    // If even basic operations fail, log warning but continue
                     console.log('⚠️ Basic database test completed (limited permissions detected)');
                     console.log(`🗄️ Database Name: ${mongoose.connection.name || 'yesuway_church'}`);
                 }
@@ -170,10 +160,9 @@ class ProductionSetup {
         console.log('📋 Step 2: Setting up collections and indexes...');
         
         try {
-            // Ensure all collections exist by creating indexes
             await this.createOptimizedIndexes();
             console.log('✅ Collections and indexes configured successfully');
-            this.setupStats.indexesCreated = 8; // Number of index operations
+            this.setupStats.indexesCreated = 6;
             
         } catch (error) {
             console.error('❌ Failed to setup collections:', error.message);
@@ -186,7 +175,6 @@ class ProductionSetup {
             console.log('🔧 Creating optimized database indexes...');
             
             const indexOperations = [
-                // Member indexes for fast lookups
                 {
                     collection: Member,
                     indexes: [
@@ -199,7 +187,6 @@ class ProductionSetup {
                     name: 'Members'
                 },
                 
-                // Group indexes
                 {
                     collection: Group,
                     indexes: [
@@ -209,13 +196,11 @@ class ProductionSetup {
                     name: 'Groups'
                 },
                 
-                // Message indexes for efficient queries
                 {
                     collection: BroadcastMessage,
                     indexes: [
-                        { sentAt: -1, isReaction: 1 },
+                        { sentAt: -1 },
                         { fromPhone: 1, sentAt: -1 },
-                        { targetMessageId: 1 },
                         { messageType: 1, sentAt: -1 },
                         { processingStatus: 1 },
                         { deliveryStatus: 1 }
@@ -223,19 +208,6 @@ class ProductionSetup {
                     name: 'Broadcast Messages'
                 },
                 
-                // Reaction indexes for smart tracking
-                {
-                    collection: MessageReaction,
-                    indexes: [
-                        { targetMessageId: 1, isProcessed: 1 },
-                        { createdAt: -1 },
-                        { reactorPhone: 1, createdAt: -1 },
-                        { isProcessed: 1, createdAt: 1 }
-                    ],
-                    name: 'Message Reactions'
-                },
-                
-                // Media file indexes
                 {
                     collection: MediaFile,
                     indexes: [
@@ -247,7 +219,6 @@ class ProductionSetup {
                     name: 'Media Files'
                 },
                 
-                // Delivery tracking indexes
                 {
                     collection: DeliveryLog,
                     indexes: [
@@ -259,7 +230,6 @@ class ProductionSetup {
                     name: 'Delivery Logs'
                 },
                 
-                // Analytics indexes
                 {
                     collection: SystemAnalytics,
                     indexes: [
@@ -269,7 +239,6 @@ class ProductionSetup {
                     name: 'System Analytics'
                 },
                 
-                // Performance metrics indexes
                 {
                     collection: PerformanceMetrics,
                     indexes: [
@@ -343,16 +312,8 @@ class ProductionSetup {
     async addProductionCongregation() {
         console.log('📋 Step 4: Adding your congregation members...');
         
-        // 🏛️ PRODUCTION CONGREGATION CONFIGURATION
-        // Replace this array with your actual church members
         const congregationMembers = [
-            // 📝 EXAMPLE FORMAT - Replace with your actual members:
-            // { phone: "+1234567890", name: "Pastor John Smith", groupName: "Church Leadership", isAdmin: true },
-            // { phone: "+1234567891", name: "Mary Johnson", groupName: "YesuWay Congregation", isAdmin: false },
-            // { phone: "+1234567892", name: "David Wilson", groupName: "YesuWay Congregation", isAdmin: false },
-            // { phone: "+1234567893", name: "Sarah Tech", groupName: "Media Team", isAdmin: false },
-            
-            // 🔥 ADD YOUR REAL CONGREGATION MEMBERS HERE:
+            // ADD YOUR REAL CONGREGATION MEMBERS HERE:
             // Uncomment and modify the lines below with your actual member information
             
             // Leadership Team
@@ -361,8 +322,8 @@ class ProductionSetup {
             // { phone: "+1234567892", name: "Deacon Name", groupName: "Church Leadership", isAdmin: false },
             
             // Main Congregation  
-             { phone: "+14257729189", name: "james", groupName: "YesuWay Congregation", isAdmin: false },
-             { phone: "+2068001141", name: "wade", groupName: "YesuWay Congregation", isAdmin: false },
+            { phone: "+14257729189", name: "james", groupName: "YesuWay Congregation", isAdmin: false },
+            { phone: "+2068001141", name: "wade", groupName: "YesuWay Congregation", isAdmin: false },
             // { phone: "+1234567895", name: "Member Name 3", groupName: "YesuWay Congregation", isAdmin: false },
             
             // Media and Technology Team
@@ -395,7 +356,6 @@ class ProductionSetup {
         }
 
         try {
-            // Get all groups for reference
             const groups = await this.dbManager.getAllGroups();
             const groupMap = {};
             groups.forEach(group => {
@@ -418,7 +378,6 @@ class ProductionSetup {
                         continue;
                     }
                     
-                    // Check if member already exists
                     let member = await this.dbManager.getMemberByPhone(cleanPhone);
                     
                     if (!member) {
@@ -440,7 +399,6 @@ class ProductionSetup {
                         console.log(`✅ Added: ${memberData.name} ${role} (${cleanPhone}) → ${groupName}`);
                         this.setupStats.membersAdded++;
                     } else {
-                        // Check if member needs to be added to the target group
                         const isInGroup = member.groups.some(g => 
                             g.groupId.toString() === targetGroup._id.toString()
                         );
@@ -480,7 +438,6 @@ class ProductionSetup {
             console.log(`   🏛️ Church Groups: ${groups.length}`);
             console.log(`   👥 Active Members: ${stats.activeMemberCount}`);
             console.log(`   📱 Recent Messages (24h): ${stats.recentMessages24h}`);
-            console.log(`   ❤️ Recent Reactions (24h): ${stats.recentReactions24h}`);
             console.log(`   📎 Media Files Processed: ${stats.processedMediaCount}`);
             
             console.log('\n📁 Church Group Details:');
@@ -545,7 +502,6 @@ class ProductionSetup {
         const invalid = [];
         const warnings = [];
 
-        // Check required environment variables
         for (const envVar of requiredEnvVars) {
             const value = process.env[envVar];
             if (!value || value === 'undefined') {
@@ -555,14 +511,12 @@ class ProductionSetup {
             }
         }
 
-        // Validate MongoDB connection
         if (!process.env.MONGODB_URI) {
             if (!process.env.MONGODB_HOST) {
                 missing.push('MONGODB_URI (or MONGODB_HOST)');
             }
         }
 
-        // Validate specific formats
         if (process.env.TWILIO_ACCOUNT_SID) {
             if (!process.env.TWILIO_ACCOUNT_SID.startsWith('AC')) {
                 invalid.push('TWILIO_ACCOUNT_SID (must start with AC)');
@@ -583,7 +537,6 @@ class ProductionSetup {
             }
         }
 
-        // Report results
         if (missing.length === 0 && invalid.length === 0) {
             console.log('✅ All required environment variables properly configured');
             
@@ -631,7 +584,6 @@ class ProductionSetup {
         try {
             const testResults = [];
             
-            // Test 1: Member operations
             try {
                 const members = await this.dbManager.getAllActiveMembers();
                 testResults.push({ test: 'Member queries', status: 'pass', result: `${members.length} members` });
@@ -639,7 +591,6 @@ class ProductionSetup {
                 testResults.push({ test: 'Member queries', status: 'fail', error: error.message });
             }
             
-            // Test 2: Group operations
             try {
                 const groups = await this.dbManager.getAllGroups();
                 testResults.push({ test: 'Group queries', status: 'pass', result: `${groups.length} groups` });
@@ -647,7 +598,6 @@ class ProductionSetup {
                 testResults.push({ test: 'Group queries', status: 'fail', error: error.message });
             }
             
-            // Test 3: Analytics recording
             try {
                 await this.dbManager.recordAnalytic('production_setup_test', 1, 'Setup completed successfully');
                 testResults.push({ test: 'Analytics recording', status: 'pass', result: 'metric recorded' });
@@ -655,7 +605,6 @@ class ProductionSetup {
                 testResults.push({ test: 'Analytics recording', status: 'fail', error: error.message });
             }
             
-            // Test 4: Performance metrics
             try {
                 await this.dbManager.recordPerformanceMetric('setup_test', 100, true);
                 testResults.push({ test: 'Performance metrics', status: 'pass', result: 'metric recorded' });
@@ -663,7 +612,6 @@ class ProductionSetup {
                 testResults.push({ test: 'Performance metrics', status: 'fail', error: error.message });
             }
             
-            // Test 5: Health stats
             try {
                 const health = await this.dbManager.getHealthStats();
                 testResults.push({ test: 'Health statistics', status: 'pass', result: `${health.activeMemberCount} active members` });
@@ -671,7 +619,6 @@ class ProductionSetup {
                 testResults.push({ test: 'Health statistics', status: 'fail', error: error.message });
             }
 
-            // Report test results
             console.log('🧪 Database Operation Test Results:');
             let passCount = 0;
             let failCount = 0;
@@ -707,7 +654,6 @@ class ProductionSetup {
             const endTime = new Date();
             const duration = Math.round((endTime - this.setupStats.startTime) / 1000);
             
-            // Record final setup analytics
             await this.dbManager.recordAnalytic('production_setup_completed', 1, 
                 `Setup completed: ${this.setupStats.membersAdded} members added, ${this.setupStats.groupsCreated} groups created`);
             
@@ -746,7 +692,6 @@ class ProductionSetup {
         console.log('');
         console.log('💚 YOUR PRODUCTION CHURCH SMS SYSTEM IS READY!');
         console.log('🏛️ Professional church communication platform with MongoDB');
-        console.log('🔇 Smart reaction tracking with silent processing');
         console.log('🧹 Clean media display with professional presentation');
         console.log('🛡️ Secure registration-only member access');
         console.log('📱 Industry-grade SMS broadcasting system');
@@ -760,7 +705,6 @@ class ProductionSetup {
         try {
             console.log('🚀 Starting clean production setup with MongoDB...\n');
             
-            // Execute all setup steps
             await this.connectToDatabase();
             await this.setupCollections();
             await this.initializeGroups();
@@ -810,7 +754,6 @@ class ProductionSetup {
             
             process.exit(1);
         } finally {
-            // Always disconnect from database
             if (this.dbManager && this.dbManager.isConnected) {
                 await this.dbManager.disconnect();
                 console.log('🔌 Database connection closed');
@@ -819,14 +762,12 @@ class ProductionSetup {
     }
 }
 
-// Production Environment Validation
 function validateProductionEnvironment() {
     console.log('🔧 Pre-setup Environment Validation:');
     
     const fs = require('fs');
     const path = require('path');
     
-    // Check for .env file
     const envPath = path.join(process.cwd(), '.env');
     if (!fs.existsSync(envPath)) {
         console.log('⚠️ No .env file found in project root');
@@ -837,7 +778,6 @@ function validateProductionEnvironment() {
         console.log('✅ .env file found');
     }
     
-    // Check Node.js version
     const nodeVersion = process.version;
     const majorVersion = parseInt(nodeVersion.slice(1).split('.')[0]);
     if (majorVersion < 18) {
@@ -846,7 +786,6 @@ function validateProductionEnvironment() {
         console.log(`✅ Node.js ${nodeVersion} is suitable for production`);
     }
     
-    // Check available memory
     const totalMemory = Math.round(process.memoryUsage().heapTotal / 1024 / 1024);
     if (totalMemory < 512) {
         console.warn(`⚠️ Low memory detected: ${totalMemory}MB. Recommended: 512MB+ for production`);
@@ -857,17 +796,12 @@ function validateProductionEnvironment() {
     console.log('');
 }
 
-// Main Execution
 async function main() {
-    // Validate environment before starting
     validateProductionEnvironment();
-    
-    // Initialize and run production setup
     const setup = new ProductionSetup();
     await setup.run();
 }
 
-// Error handling for uncaught exceptions
 process.on('uncaughtException', (error) => {
     console.error('\n💥 UNCAUGHT EXCEPTION:');
     console.error('═══════════════════════════');
@@ -889,7 +823,6 @@ process.on('unhandledRejection', (reason, promise) => {
     process.exit(1);
 });
 
-// 🔥 FIXED: Correct class instantiation
 if (require.main === module) {
     main().catch(error => {
         console.error('\n❌ Setup failed:', error.message);
