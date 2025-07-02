@@ -945,6 +945,9 @@ class ProductionChurchSMS {
 
     // Add this method to the ProductionChurchSMS class in app.js
 
+// Enhanced ProductionChurchSMS class methods with ADD and REMOVE commands
+// Add these methods to your ProductionChurchSMS class in app.js
+
 async handleAddMemberCommand(adminPhone, commandText) {
     const startTime = Date.now();
     logger.info(`🔧 Admin ADD command from ${adminPhone}: ${commandText}`);
@@ -1035,7 +1038,119 @@ async handleAddMemberCommand(adminPhone, commandText) {
     }
 }
 
+async handleRemoveMemberCommand(adminPhone, commandText) {
+    const startTime = Date.now();
+    logger.info(`🗑️ Admin REMOVE command from ${adminPhone}: ${commandText}`);
+
+    try {
+        // Verify admin privileges
+        const admin = await this.getMemberInfo(adminPhone);
+        if (!admin || !admin.isAdmin) {
+            logger.warn(`❌ Non-admin attempted REMOVE command: ${adminPhone}`);
+            return "❌ Access denied. Only church administrators can remove members.";
+        }
+
+        // Parse the REMOVE command: "REMOVE +2134567653 Yuis"
+        const parts = commandText.trim().split(/\s+/);
+        
+        if (parts.length < 3) {
+            return "❌ Invalid format. Use: REMOVE +1234567890 MemberName";
+        }
+
+        const [command, phoneNumber, ...nameParts] = parts;
+        const memberName = nameParts.join(' ').trim();
+
+        if (command.toUpperCase() !== 'REMOVE') {
+            return "❌ Command not recognized. Use: REMOVE +1234567890 MemberName";
+        }
+
+        if (!memberName) {
+            return "❌ Member name is required for verification. Use: REMOVE +1234567890 MemberName";
+        }
+
+        // Clean and validate phone number
+        const cleanPhone = this.cleanPhoneNumber(phoneNumber);
+        if (!cleanPhone) {
+            return `❌ Invalid phone number format: ${phoneNumber}. Use format: +1234567890`;
+        }
+
+        // Find the member to remove
+        const memberToRemove = await this.getMemberInfo(cleanPhone);
+        if (!memberToRemove) {
+            return `❌ Member not found: ${cleanPhone}. Cannot remove non-existent member.`;
+        }
+
+        // Verify name matches for extra security
+        if (memberToRemove.name.toLowerCase() !== memberName.toLowerCase()) {
+            return `❌ Name verification failed!\n` +
+                   `Expected: ${memberToRemove.name}\n` +
+                   `Provided: ${memberName}\n` +
+                   `Please check the name and try again.`;
+        }
+
+        // Prevent admin from removing themselves
+        if (cleanPhone === adminPhone) {
+            return "❌ You cannot remove yourself from the system. Contact another admin.";
+        }
+
+        // Prevent removing other admins (safety feature)
+        if (memberToRemove.isAdmin) {
+            return `❌ Cannot remove admin member: ${memberToRemove.name}. Only admins can remove other admins through database.`;
+        }
+
+        // Store member info for response before deletion
+        const memberInfo = {
+            name: memberToRemove.name,
+            phone: memberToRemove.phoneNumber,
+            groups: memberToRemove.groups || []
+        };
+
+        // Remove member from database (soft delete by setting active: false)
+        await this.dbManager.dbManager?.updateOne?.(
+            { phoneNumber: cleanPhone },
+            { 
+                active: false,
+                removedAt: new Date(),
+                removedBy: admin.name
+            }
+        ) || await Member.findOneAndUpdate(
+            { phoneNumber: cleanPhone },
+            { 
+                active: false,
+                removedAt: new Date(),
+                removedBy: admin.name
+            }
+        );
+
+        // Log the removal for audit trail
+        await this.dbManager.recordAnalytic('member_removed_via_command', 1, 
+            `Admin: ${admin.name}, Removed Member: ${memberInfo.name} (${cleanPhone})`);
+
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('remove_member_command', durationMs, true);
+
+        logger.info(`🗑️ Admin ${admin.name} removed member: ${memberInfo.name} (${cleanPhone})`);
+
+        // Return success message to admin
+        return `✅ Member removed successfully!\n` +
+               `👤 Name: ${memberInfo.name}\n` +
+               `📱 Phone: ${cleanPhone}\n` +
+               `🗑️ Status: Deactivated\n` +
+               `📊 Remaining active members: ${await this.dbManager.getAllActiveMembers().then(m => m.length)}`;
+
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('remove_member_command', durationMs, false, error.message);
+        
+        logger.error(`❌ REMOVE command error: ${error.message}`);
+        logger.error(`❌ Stack trace: ${error.stack}`);
+        
+        return "❌ System error occurred while removing member. Tech team has been notified.";
+    }
+}
+
 // Modify the existing handleIncomingMessage method to include ADD command detection
+// Enhanced handleIncomingMessage method with both ADD and REMOVE commands
 async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
     logger.info(`📨 Incoming message from ${fromPhone}`);
 
@@ -1087,7 +1202,8 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
             // Add admin commands to help if user is admin
             if (member.isAdmin) {
                 helpMessage += "\n\n🔑 ADMIN COMMANDS:\n" +
-                             "• ADD +1234567890 MemberName - Add new member to congregation";
+                             "• ADD +1234567890 MemberName - Add new member\n" +
+                             "• REMOVE +1234567890 MemberName - Remove member";
             }
             
             return helpMessage;
@@ -1096,6 +1212,11 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
         // Check for ADD command (admin only)
         if (messageBody.toUpperCase().startsWith('ADD ')) {
             return await this.handleAddMemberCommand(fromPhone, messageBody);
+        }
+
+        // Check for REMOVE command (admin only)
+        if (messageBody.toUpperCase().startsWith('REMOVE ')) {
+            return await this.handleRemoveMemberCommand(fromPhone, messageBody);
         }
 
         // Regular message broadcasting
