@@ -1172,7 +1172,6 @@ You've been added to our church SMS system by ${adminName}.
 
 💡 GETTING STARTED:
 • Send "Hello everyone!" to introduce yourself
-• Text "HELP" anytime for system information
 • Share freely - we're one church family
 
 🙏 SCRIPTURE:
