@@ -951,6 +951,9 @@ class ProductionChurchSMS {
 // Enhanced handleAddMemberCommand method for app.js
 // Replace the existing method in your ProductionChurchSMS class
 
+// Enhanced handleAddMemberCommand method for app.js
+// Replace the existing method in your ProductionChurchSMS class
+
 async handleAddMemberCommand(adminPhone, commandText) {
     const startTime = Date.now();
     logger.info(`🔧 Admin ADD command from ${adminPhone}: ${commandText}`);
@@ -1021,9 +1024,12 @@ async handleAddMemberCommand(adminPhone, commandText) {
                 }]
             });
 
+            // ✨ NEW: Send welcome SMS to the new member
+            const welcomeMessage = await this.sendWelcomeSMS(cleanPhone, memberName, admin.name);
+            
             // Log the addition for audit trail
             await this.dbManager.recordAnalytic('member_added_via_command', 1, 
-                `Admin: ${admin.name}, New Member: ${memberName} (${cleanPhone})`);
+                `Admin: ${admin.name}, New Member: ${memberName} (${cleanPhone}), Welcome SMS: ${welcomeMessage.success ? 'Sent' : 'Failed'}`);
 
             const durationMs = Date.now() - startTime;
             await this.recordPerformanceMetric('add_member_command', durationMs, true);
@@ -1033,12 +1039,23 @@ async handleAddMemberCommand(adminPhone, commandText) {
             // Get updated member count
             const totalMembers = await this.dbManager.getAllActiveMembers();
 
-            // Return success message to admin
-            return `✅ Member added successfully!\n` +
-                   `👤 Name: ${memberName}\n` +
-                   `📱 Phone: ${cleanPhone}\n` +
-                   `🏛️ Group: ${congregationGroup.name}\n` +
-                   `📊 Total active members: ${totalMembers.length}`;
+            // Return enhanced success message to admin with welcome SMS status
+            let successMessage = `✅ Member added successfully!\n` +
+                               `👤 Name: ${memberName}\n` +
+                               `📱 Phone: ${cleanPhone}\n` +
+                               `🏛️ Group: ${congregationGroup.name}\n` +
+                               `📊 Total active members: ${totalMembers.length}`;
+
+            // Add welcome SMS status to admin response
+            if (welcomeMessage.success) {
+                successMessage += `\n📩 Welcome SMS sent successfully`;
+                logger.info(`📩 Welcome SMS delivered to ${memberName} (${cleanPhone}): ${welcomeMessage.sid}`);
+            } else {
+                successMessage += `\n⚠️ Welcome SMS failed: ${welcomeMessage.error}`;
+                logger.warn(`📩 Welcome SMS failed to ${memberName} (${cleanPhone}): ${welcomeMessage.error}`);
+            }
+
+            return successMessage;
 
         } catch (createError) {
             // Enhanced error handling for specific MongoDB errors
@@ -1081,6 +1098,124 @@ async handleAddMemberCommand(adminPhone, commandText) {
             return "❌ System error occurred while adding member. Tech team has been notified.";
         }
     }
+}
+
+// ✨ NEW METHOD: Send welcome SMS to new members
+async sendWelcomeSMS(memberPhone, memberName, adminName) {
+    const startTime = Date.now();
+    logger.info(`📩 Sending welcome SMS to new member: ${memberName} (${memberPhone})`);
+
+    try {
+        // Create a personalized welcome message
+        const welcomeMessage = this.createWelcomeMessage(memberName, adminName);
+        
+        // Send the welcome SMS
+        const result = await this.sendSMS(memberPhone, welcomeMessage, 2); // 2 retries for welcome messages
+        
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('welcome_sms_send', durationMs, result.success);
+
+        if (result.success) {
+            // Log successful welcome SMS
+            await this.dbManager.recordAnalytic('welcome_sms_sent', 1, 
+                `New member: ${memberName} (${memberPhone}), Added by: ${adminName}`);
+            
+            logger.info(`✅ Welcome SMS sent to ${memberName}: ${result.sid}`);
+            return {
+                success: true,
+                sid: result.sid,
+                message: "Welcome SMS sent successfully"
+            };
+        } else {
+            // Log failed welcome SMS
+            await this.dbManager.recordAnalytic('welcome_sms_failed', 1, 
+                `New member: ${memberName} (${memberPhone}), Error: ${result.error}`);
+            
+            logger.error(`❌ Welcome SMS failed to ${memberName}: ${result.error}`);
+            return {
+                success: false,
+                error: result.error,
+                message: "Welcome SMS delivery failed"
+            };
+        }
+
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('welcome_sms_send', durationMs, false, error.message);
+        
+        logger.error(`❌ Welcome SMS system error for ${memberName}: ${error.message}`);
+        return {
+            success: false,
+            error: error.message,
+            message: "Welcome SMS system error"
+        };
+    }
+}
+
+// ✨ NEW METHOD: Create personalized welcome message
+createWelcomeMessage(memberName, adminName) {
+    // Professional welcome message for new congregation members
+    const welcomeMessage = `🏛️ Welcome to YesuWay Church, ${memberName}!
+
+You've been added to our church SMS system by ${adminName}.
+
+📱 HOW IT WORKS:
+• Text anything to this number to broadcast to our entire congregation
+• Share photos, prayer requests, and announcements
+• Everyone receives your messages instantly
+
+✅ WHAT YOU CAN SHARE:
+• Prayer requests and testimonies
+• Church event updates and reminders
+• Photos from services and events
+• Encouragement and fellowship messages
+
+💡 GETTING STARTED:
+• Send "Hello everyone!" to introduce yourself
+• Text "HELP" anytime for system information
+• Share freely - we're one church family
+
+🙏 SCRIPTURE:
+"And let us consider how we may spur one another on toward love and good deeds." - Hebrews 10:24
+
+Welcome to our church family! We're excited to have you connected with us.
+
+- YesuWay Church Technology Team`;
+
+    return welcomeMessage;
+}
+
+// ✨ OPTIONAL: Enhanced welcome message with church-specific customization
+createCustomWelcomeMessage(memberName, adminName, churchName = "YesuWay Church") {
+    // You can customize this method for your specific church
+    const welcomeMessage = `🏛️ Welcome to ${churchName}, ${memberName}!
+
+${adminName} has added you to our church communication system.
+
+📱 YOU'RE NOW CONNECTED to our entire congregation through SMS!
+
+🎯 SIMPLE TO USE:
+• Text anything to this number
+• Your message goes to everyone instantly
+• Share photos, videos, and updates freely
+
+🏛️ CHURCH FAMILY NETWORK:
+• Prayer requests reach everyone immediately
+• Event updates and announcements
+• Photos from services and fellowship
+• Daily encouragement and support
+
+📲 TRY IT NOW:
+Send "Excited to be part of ${churchName}!" and introduce yourself to everyone.
+
+🙏 BLESSING:
+"Therefore encourage one another and build each other up." - 1 Thessalonians 5:11
+
+God bless you, and welcome to our church family!
+
+- ${churchName} Leadership Team`;
+
+    return welcomeMessage;
 }
 
 // Replace your handleRemoveMemberCommand method in app.js with this version
