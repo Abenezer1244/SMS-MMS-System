@@ -1441,6 +1441,245 @@ async handleCleanupCommand(adminPhone, commandText) {
     }
 }
 
+// Add this new method to your ProductionChurchSMS class
+
+async generateHelpMessage(member) {
+    const startTime = Date.now();
+    
+    try {
+        // Get system statistics for help message
+        const stats = await this.dbManager.getHealthStats();
+        const currentTime = new Date().toLocaleString();
+        
+        // Base help message for all members
+        let helpMessage = `📋 YESUWAY CHURCH SMS SYSTEM
+═══════════════════════════════════
+
+🏛️ CHURCH COMMUNICATION PLATFORM
+📅 Current Time: ${currentTime}
+👥 Active Members: ${stats.activeMemberCount}
+📱 Church Number: ${config.twilio.phoneNumber}
+
+📱 FOR ALL MEMBERS:
+═══════════════════════════════════
+✅ Send messages to entire congregation
+✅ Share photos/videos (unlimited size)
+✅ Send prayer requests and announcements
+✅ Share testimonies and encouragement
+✅ Ask for help or volunteers
+
+💬 HOW TO USE:
+• Text anything to broadcast to everyone
+• Share photos from church events
+• Send prayer requests for immediate support
+• Post announcements and reminders
+• Express reactions (tracked in summaries)
+
+📝 EXAMPLES:
+• "Prayer meeting tonight at 7 PM!"
+• "Thank you for the wonderful service!"
+• "Does anyone have a truck I could borrow?"
+• [Send photos from church events]
+
+🔇 REACTIONS:
+Your thumbs up, hearts, etc. are tracked
+silently and appear in daily summaries.
+
+🏛️ SYSTEM INFO:
+• Production system - serving 24/7
+• MongoDB database - enterprise grade
+• Clean media links - professional presentation
+• Secure registration - members only
+
+📋 AVAILABLE COMMANDS:
+═══════════════════════════════════
+• HELP - Show this information`;
+
+        // Add admin commands if user is admin
+        if (member.isAdmin) {
+            helpMessage += `
+
+🔑 ADMIN COMMANDS:
+═══════════════════════════════════
+• ADD +1234567890 MemberName
+  └─ Add new member (sends welcome SMS)
+  
+• REMOVE +1234567890 [MemberName]  
+  └─ Permanently delete member
+  
+• CLEANUP STATUS
+  └─ Show database health status
+  
+• CLEANUP DUPLICATES
+  └─ Remove duplicate phone numbers
+  
+• CLEANUP PHONE +1234567890
+  └─ Remove all data for phone number
+  
+• CLEANUP ORPHANED
+  └─ Remove inactive members & orphaned data
+
+📊 ADMIN EXAMPLES:
+• ADD +12065551234 John Smith
+• REMOVE +12065551234 John Smith  
+• CLEANUP STATUS
+• CLEANUP DUPLICATES
+
+⚠️ ADMIN NOTES:
+• All admin commands are logged
+• REMOVE permanently deletes all data
+• CLEANUP operations cannot be undone
+• New members receive automatic welcome SMS`;
+        }
+
+        // Add footer
+        helpMessage += `
+
+🙏 CHURCH FELLOWSHIP:
+═══════════════════════════════════
+"Let us consider how we may spur one another 
+on toward love and good deeds." - Hebrews 10:24
+
+💚 SERVING YOUR CONGREGATION 24/7
+🏛️ Professional Church Communication System`;
+
+        // Record help command usage
+        await this.dbManager.recordAnalytic('help_command_used', 1, 
+            `User: ${member.name} (${member.isAdmin ? 'Admin' : 'Member'})`);
+
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('help_command', durationMs, true);
+
+        logger.info(`📋 HELP command used by ${member.name} (Admin: ${member.isAdmin})`);
+
+        return helpMessage;
+
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('help_command', durationMs, false, error.message);
+        
+        logger.error(`❌ HELP command error: ${error.message}`);
+        
+        // Fallback help message if database fails
+        let fallbackMessage = `📋 YESUWAY CHURCH SMS SYSTEM
+
+💬 BASIC USAGE:
+• Text anything to broadcast to congregation
+• Share photos and prayer requests
+• Send announcements and updates
+
+📱 Church Number: ${config.twilio.phoneNumber}`;
+
+        if (member.isAdmin) {
+            fallbackMessage += `
+
+🔑 ADMIN COMMANDS:
+• ADD +1234567890 MemberName
+• REMOVE +1234567890 MemberName
+• CLEANUP STATUS
+• CLEANUP DUPLICATES`;
+        }
+
+        fallbackMessage += `
+
+💚 Professional Church Communication System`;
+
+        return fallbackMessage;
+    }
+}
+
+// Optional: Add a detailed admin help command
+async generateDetailedAdminHelp(member) {
+    if (!member.isAdmin) {
+        return "❌ Access denied. Admin commands are restricted to church administrators.";
+    }
+
+    const helpMessage = `🔑 DETAILED ADMIN COMMAND REFERENCE
+═══════════════════════════════════════
+
+📝 MEMBER MANAGEMENT:
+═══════════════════════════════════════
+
+➤ ADD COMMAND:
+Format: ADD +1234567890 MemberName
+• Adds new member to YesuWay Congregation group
+• Sends automatic welcome SMS to new member
+• Validates phone number format
+• Checks for existing members
+• Returns confirmation with member count
+
+Examples:
+• ADD +12065551234 John Smith
+• ADD +14257729189 Sarah Johnson
+
+➤ REMOVE COMMAND:
+Format: REMOVE +1234567890 [MemberName]
+• PERMANENTLY deletes member from database
+• Removes all associated data (messages, logs)
+• Optional name for verification
+• Cannot remove admin members
+• Cannot remove yourself
+
+Examples:
+• REMOVE +12065551234
+• REMOVE +12065551234 John Smith
+
+🗄️ DATABASE CLEANUP:
+═══════════════════════════════════════
+
+➤ CLEANUP STATUS:
+Shows database health information:
+• Duplicate phone numbers count
+• Inactive members count  
+• Orphaned messages count
+• Detailed list of issues found
+
+➤ CLEANUP DUPLICATES:
+• Finds members with same phone number
+• Keeps oldest active member
+• Deletes duplicate entries
+• Cannot be undone
+
+➤ CLEANUP PHONE +1234567890:
+• Removes ALL members with that phone
+• Deletes all associated data
+• Completely cleans phone number
+• Makes number available for re-use
+
+➤ CLEANUP ORPHANED:
+• Removes inactive members (active: false)
+• Deletes orphaned messages
+• Deletes orphaned delivery logs
+• Optimizes database performance
+
+⚠️ IMPORTANT WARNINGS:
+═══════════════════════════════════════
+• All REMOVE and CLEANUP operations are PERMANENT
+• Deleted data cannot be recovered
+• Admin members cannot be removed via SMS
+• Always check CLEANUP STATUS before running cleanup
+• Welcome SMS are sent automatically for new members
+
+📊 SYSTEM MONITORING:
+═══════════════════════════════════════
+• All admin commands are logged for audit
+• Performance metrics are tracked
+• Database operations are monitored
+• Error handling provides detailed feedback
+
+💡 BEST PRACTICES:
+═══════════════════════════════════════
+• Run CLEANUP STATUS weekly
+• Add members one at a time for welcome SMS
+• Use full names for better organization
+• Keep phone numbers in +1234567890 format
+• Verify member details before removal
+
+🏛️ YesuWay Church Technology Team`;
+
+    return helpMessage;
+}
+
 async getCleanupStatus() {
     try {
         // Find duplicates
@@ -1679,6 +1918,7 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
             return helpMessage;
         }
 
+        
         // Check for ADD command (admin only)
         if (messageBody.toUpperCase().startsWith('ADD ')) {
             return await this.handleAddMemberCommand(fromPhone, messageBody);
@@ -1687,6 +1927,11 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
         // Check for REMOVE command (admin only)
         if (messageBody.toUpperCase().startsWith('REMOVE ')) {
             return await this.handleRemoveMemberCommand(fromPhone, messageBody);
+        }
+
+        // Check for HELP command
+        if (messageBody.toUpperCase() === 'HELP') {
+            return await this.generateHelpMessage(member);
         }
 
         // Check for CLEANUP command (admin only)
