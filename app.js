@@ -1441,7 +1441,8 @@ async handleCleanupCommand(adminPhone, commandText) {
     }
 }
 
-// Add this new method to your ProductionChurchSMS class
+// Enhanced generateHelpMessage method with WIPE and ADMIN commands
+// Replace your existing generateHelpMessage method in app.js with this version
 
 async generateHelpMessage(member) {
     const startTime = Date.now();
@@ -1495,6 +1496,8 @@ silently and appear in daily summaries.
 ═══════════════════════════════════
 • HELP - Show this information`;
 
+
+
         // Add admin commands if user is admin
         if (member.isAdmin) {
             helpMessage += `
@@ -1506,6 +1509,12 @@ silently and appear in daily summaries.
   
 • REMOVE +1234567890 [MemberName]  
   └─ Permanently delete member
+  
+• ADMIN +1234567890 AdminName
+  └─ Grant full admin privileges
+  
+• WIPE CONFIRM
+  └─ Emergency complete database wipe
   
 • CLEANUP STATUS
   └─ Show database health status
@@ -1521,15 +1530,20 @@ silently and appear in daily summaries.
 
 📊 ADMIN EXAMPLES:
 • ADD +12065551234 John Smith
-• REMOVE +12065551234 John Smith  
+• REMOVE +12065551234 John Smith
+• ADMIN +12065551234 Jane Doe
+• WIPE CONFIRM
 • CLEANUP STATUS
 • CLEANUP DUPLICATES
 
 ⚠️ ADMIN NOTES:
-• All admin commands are logged
-• REMOVE permanently deletes all data
+• All admin commands are permanently logged
+• REMOVE permanently deletes all member data
+• ADMIN grants full system privileges
+• WIPE destroys ALL database content
 • CLEANUP operations cannot be undone
-• New members receive automatic welcome SMS`;
+• New members receive automatic welcome SMS
+• New admins receive privilege notification SMS`;
         }
 
         // Add footer
@@ -1576,8 +1590,9 @@ on toward love and good deeds." - Hebrews 10:24
 🔑 ADMIN COMMANDS:
 • ADD +1234567890 MemberName
 • REMOVE +1234567890 MemberName
-• CLEANUP STATUS
-• CLEANUP DUPLICATES`;
+• ADMIN +1234567890 AdminName
+• WIPE CONFIRM
+• CLEANUP STATUS`;
         }
 
         fallbackMessage += `
@@ -1678,6 +1693,609 @@ Shows database health information:
 🏛️ YesuWay Church Technology Team`;
 
     return helpMessage;
+}
+
+
+// Add these methods to your ProductionChurchSMS class in app.js
+// Place them after the existing handleCleanupCommand method
+
+// ⚠️ DANGEROUS: WIPE command - Completely wipes all database data
+async handleWipeCommand(adminPhone, commandText) {
+    const startTime = Date.now();
+    logger.info(`🚨 ADMIN WIPE command from ${adminPhone}: ${commandText}`);
+
+    try {
+        // Verify admin privileges
+        const admin = await this.getMemberInfo(adminPhone);
+        if (!admin || !admin.isAdmin) {
+            logger.warn(`❌ Non-admin attempted WIPE command: ${adminPhone}`);
+            return "❌ Access denied. Only church administrators can execute WIPE operations.";
+        }
+
+        const parts = commandText.trim().split(/\s+/);
+        const confirmationWord = parts[1]?.toUpperCase();
+
+        // Require explicit confirmation to prevent accidental wipes
+        if (!confirmationWord || confirmationWord !== 'CONFIRM') {
+            return `🚨 WIPE COMMAND - PERMANENT DATA DESTRUCTION\n\n` +
+                   `⚠️ This will PERMANENTLY DELETE ALL DATA:\n` +
+                   `• All congregation members\n` +
+                   `• All broadcast messages\n` +
+                   `• All media files\n` +
+                   `• All delivery logs\n` +
+                   `• All analytics data\n` +
+                   `• All performance metrics\n` +
+                   `• ALL DATABASE CONTENT\n\n` +
+                   `🔥 THIS CANNOT BE UNDONE!\n\n` +
+                   `To proceed, send: WIPE CONFIRM\n\n` +
+                   `⚠️ Only use this for complete system reset`;
+        }
+
+        logger.warn(`🚨 ADMIN ${admin.name} initiating COMPLETE DATABASE WIPE`);
+
+        try {
+            // Count data before deletion for logging
+            const preWipeStats = {
+                members: await Member.countDocuments({}),
+                groups: await Group.countDocuments({}),
+                messages: await BroadcastMessage.countDocuments({}),
+                mediaFiles: await MediaFile.countDocuments({}),
+                deliveryLogs: await DeliveryLog.countDocuments({}),
+                analytics: await SystemAnalytics.countDocuments({}),
+                performanceMetrics: await PerformanceMetrics.countDocuments({})
+            };
+
+            logger.warn(`🚨 Pre-wipe data count: ${JSON.stringify(preWipeStats)}`);
+
+            // COMPLETE DATABASE WIPE - DELETE ALL COLLECTIONS
+            const deleteResults = await Promise.allSettled([
+                Member.deleteMany({}),
+                Group.deleteMany({}),
+                BroadcastMessage.deleteMany({}),
+                MediaFile.deleteMany({}),
+                DeliveryLog.deleteMany({}),
+                SystemAnalytics.deleteMany({}),
+                PerformanceMetrics.deleteMany({})
+            ]);
+
+            // Check deletion results
+            const deletionSummary = {
+                members: deleteResults[0].status === 'fulfilled' ? deleteResults[0].value.deletedCount : 0,
+                groups: deleteResults[1].status === 'fulfilled' ? deleteResults[1].value.deletedCount : 0,
+                messages: deleteResults[2].status === 'fulfilled' ? deleteResults[2].value.deletedCount : 0,
+                mediaFiles: deleteResults[3].status === 'fulfilled' ? deleteResults[3].value.deletedCount : 0,
+                deliveryLogs: deleteResults[4].status === 'fulfilled' ? deleteResults[4].value.deletedCount : 0,
+                analytics: deleteResults[5].status === 'fulfilled' ? deleteResults[5].value.deletedCount : 0,
+                performanceMetrics: deleteResults[6].status === 'fulfilled' ? deleteResults[6].value.deletedCount : 0
+            };
+
+            // Check for any failed deletions
+            const failures = deleteResults.filter(result => result.status === 'rejected');
+            if (failures.length > 0) {
+                logger.error(`❌ Some deletions failed: ${failures.map(f => f.reason?.message).join(', ')}`);
+            }
+
+            const totalDeleted = Object.values(deletionSummary).reduce((sum, count) => sum + count, 0);
+
+            // Final verification - check if database is truly empty
+            const postWipeStats = {
+                members: await Member.countDocuments({}),
+                groups: await Group.countDocuments({}),
+                messages: await BroadcastMessage.countDocuments({}),
+                mediaFiles: await MediaFile.countDocuments({}),
+                deliveryLogs: await DeliveryLog.countDocuments({}),
+                analytics: await SystemAnalytics.countDocuments({}),
+                performanceMetrics: await PerformanceMetrics.countDocuments({})
+            };
+
+            const remainingRecords = Object.values(postWipeStats).reduce((sum, count) => sum + count, 0);
+
+            const durationMs = Date.now() - startTime;
+            
+            // Log the wipe operation (this will fail if analytics collection was wiped)
+            try {
+                await this.dbManager.recordAnalytic('database_wiped', totalDeleted, 
+                    `Admin: ${admin.name}, Total records deleted: ${totalDeleted}, Duration: ${durationMs}ms`);
+            } catch (logError) {
+                logger.warn(`⚠️ Could not log wipe operation (expected if analytics collection wiped): ${logError.message}`);
+            }
+
+            await this.recordPerformanceMetric('database_wipe', durationMs, remainingRecords === 0);
+
+            logger.warn(`🚨 DATABASE WIPE COMPLETED by ${admin.name}`);
+            logger.warn(`📊 Total records deleted: ${totalDeleted}`);
+            logger.warn(`📊 Remaining records: ${remainingRecords}`);
+
+            let wipeReport = `🚨 DATABASE WIPE COMPLETED\n\n`;
+            wipeReport += `🔥 PERMANENT DELETION SUMMARY:\n`;
+            wipeReport += `👥 Members deleted: ${deletionSummary.members}\n`;
+            wipeReport += `🏛️ Groups deleted: ${deletionSummary.groups}\n`;
+            wipeReport += `📨 Messages deleted: ${deletionSummary.messages}\n`;
+            wipeReport += `📎 Media files deleted: ${deletionSummary.mediaFiles}\n`;
+            wipeReport += `📊 Delivery logs deleted: ${deletionSummary.deliveryLogs}\n`;
+            wipeReport += `📈 Analytics deleted: ${deletionSummary.analytics}\n`;
+            wipeReport += `⚡ Performance metrics deleted: ${deletionSummary.performanceMetrics}\n\n`;
+            wipeReport += `📊 Total records deleted: ${totalDeleted}\n`;
+            wipeReport += `⏱️ Operation completed in: ${(durationMs / 1000).toFixed(2)}s\n\n`;
+
+            if (remainingRecords === 0) {
+                wipeReport += `✅ DATABASE IS NOW COMPLETELY EMPTY\n`;
+                wipeReport += `💡 Run setup.js to reinitialize the system\n`;
+                wipeReport += `💡 Add congregation members via setup script`;
+            } else {
+                wipeReport += `⚠️ WARNING: ${remainingRecords} records remain\n`;
+                wipeReport += `💡 Some collections may not have been fully wiped`;
+            }
+
+            return wipeReport;
+
+        } catch (wipeError) {
+            logger.error(`❌ Database wipe failed: ${wipeError.message}`);
+            return `❌ Database wipe failed: ${wipeError.message}\n\n💡 Check database connection and permissions`;
+        }
+
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('database_wipe', durationMs, false, error.message);
+        
+        logger.error(`❌ WIPE command error: ${error.message}`);
+        logger.error(`❌ Stack trace: ${error.stack}`);
+        
+        return "❌ System error occurred during wipe operation.\n\n💡 Check system logs for detailed error information.";
+    }
+}
+
+
+
+// 🔑 ADMIN command - Add new administrators with full control
+async handleAdminCommand(adminPhone, commandText) {
+    const startTime = Date.now();
+    logger.info(`🔑 ADMIN command from ${adminPhone}: ${commandText}`);
+
+    try {
+        // Verify admin privileges
+        const admin = await this.getMemberInfo(adminPhone);
+        if (!admin || !admin.isAdmin) {
+            logger.warn(`❌ Non-admin attempted ADMIN command: ${adminPhone}`);
+            return "❌ Access denied. Only church administrators can manage admin privileges.";
+        }
+
+        // Parse the ADMIN command: "ADMIN +15425636786 DANE"
+        const parts = commandText.trim().split(/\s+/);
+        
+        if (parts.length < 3) {
+            return "❌ Invalid format. Use: ADMIN +1234567890 AdminName\n\n💡 This will:\n• Add person as new admin\n• Grant full administrative control\n• Enable all admin commands (ADD, REMOVE, WIPE, CLEANUP)";
+        }
+
+        const [command, phoneNumber, ...nameParts] = parts;
+        const adminName = nameParts.join(' ').trim();
+
+        if (command.toUpperCase() !== 'ADMIN') {
+            return "❌ Command not recognized. Use: ADMIN +1234567890 AdminName";
+        }
+
+        if (!adminName) {
+            return "❌ Admin name is required. Use: ADMIN +1234567890 AdminName";
+        }
+
+        // Clean and validate phone number
+        const cleanPhone = this.cleanPhoneNumber(phoneNumber);
+        if (!cleanPhone) {
+            return `❌ Invalid phone number format: ${phoneNumber}.\n💡 Use format: +1234567890`;
+        }
+
+        // Prevent admin from modifying themselves (though they could add themselves as admin again)
+        if (cleanPhone === this.cleanPhoneNumber(adminPhone)) {
+            return "❌ You cannot modify your own admin status.\n\n💡 Contact another admin if you need to change your permissions.";
+        }
+
+        // Check if person already exists
+        let existingMember = await this.getMemberInfo(cleanPhone);
+        
+        if (existingMember) {
+            // Person exists - check if already admin
+            if (existingMember.isAdmin) {
+                const groupNames = existingMember.groups?.map(g => g.name).join(", ") || "no groups";
+                return `❌ ${existingMember.name} is already an administrator!\n\n📊 Current Status:\n👤 Name: ${existingMember.name}\n📱 Phone: ${cleanPhone}\n🔑 Admin: Yes\n🏛️ Groups: ${groupNames}\n📊 Messages sent: ${existingMember.messageCount}`;
+            } else {
+                // Promote existing member to admin
+                try {
+                    await Member.findByIdAndUpdate(
+                        existingMember.id,
+                        { 
+                            isAdmin: true,
+                            name: adminName, // Update name in case it changed
+                            lastActivity: new Date()
+                        },
+                        { new: true }
+                    );
+
+                    // Ensure they're in the leadership group
+                    const leadershipGroup = await this.dbManager.getGroupByName("Church Leadership");
+                    if (leadershipGroup) {
+                        const isInLeadershipGroup = existingMember.groups.some(g => 
+                            g.groupId.toString() === leadershipGroup._id.toString()
+                        );
+                        
+                        if (!isInLeadershipGroup) {
+                            await this.dbManager.addMemberToGroup(existingMember.id, leadershipGroup._id);
+                            logger.info(`✅ Added new admin ${adminName} to Church Leadership group`);
+                        }
+                    }
+
+                    // ✨ Send admin promotion notification SMS
+                    const promotionMessage = await this.sendAdminPromotionSMS(cleanPhone, adminName, admin.name);
+
+                    // Log the promotion for audit trail
+                    await this.dbManager.recordAnalytic('member_promoted_to_admin', 1, 
+                        `Promoted by: ${admin.name}, New Admin: ${adminName} (${cleanPhone}), Promotion SMS: ${promotionMessage.success ? 'Sent' : 'Failed'}`);
+
+                    const durationMs = Date.now() - startTime;
+                    await this.recordPerformanceMetric('admin_promotion', durationMs, true);
+
+                    logger.info(`✅ Admin ${admin.name} promoted ${adminName} (${cleanPhone}) to administrator`);
+
+                    // Get updated member count
+                    const totalMembers = await this.dbManager.getAllActiveMembers();
+                    const adminCount = totalMembers.filter(m => m.isAdmin).length;
+
+                    let successMessage = `🔑 ADMIN PROMOTION SUCCESSFUL!\n\n`;
+                    successMessage += `👤 Name: ${adminName}\n`;
+                    successMessage += `📱 Phone: ${cleanPhone}\n`;
+                    successMessage += `🔑 Status: Administrator (PROMOTED)\n`;
+                    successMessage += `🏛️ Group: Church Leadership\n`;
+                    successMessage += `📊 Total admins: ${adminCount}\n`;
+                    successMessage += `📊 Total members: ${totalMembers.length}\n\n`;
+                    successMessage += `✅ FULL ADMIN PRIVILEGES GRANTED:\n`;
+                    successMessage += `• ADD - Add new congregation members\n`;
+                    successMessage += `• REMOVE - Remove members from system\n`;
+                    successMessage += `• ADMIN - Manage administrator privileges\n`;
+                    successMessage += `• WIPE - Emergency database wipe\n`;
+                    successMessage += `• CLEANUP - Database maintenance\n`;
+                    successMessage += `• Access to all admin endpoints\n\n`;
+
+                    // Add promotion SMS status to admin response
+                    if (promotionMessage.success) {
+                        successMessage += `📩 Admin promotion SMS sent successfully`;
+                        logger.info(`📩 Admin promotion SMS delivered to ${adminName} (${cleanPhone}): ${promotionMessage.sid}`);
+                    } else {
+                        successMessage += `⚠️ Admin promotion SMS failed: ${promotionMessage.error}`;
+                        logger.warn(`📩 Admin promotion SMS failed to ${adminName} (${cleanPhone}): ${promotionMessage.error}`);
+                    }
+
+                    return successMessage;
+
+                } catch (promotionError) {
+                    logger.error(`❌ Failed to promote member to admin: ${promotionError.message}`);
+                    return `❌ Failed to promote ${existingMember.name} to administrator.\n\n💡 Error: ${promotionError.message}`;
+                }
+            }
+        } else {
+            // Person doesn't exist - create new admin member
+            try {
+                // Get the leadership group for new admin
+                const leadershipGroup = await this.dbManager.getGroupByName("Church Leadership");
+                if (!leadershipGroup) {
+                    return "❌ Church Leadership group not found. Run setup.js to initialize groups.";
+                }
+
+                // Create new admin member
+                const newAdmin = await this.dbManager.createMember({
+                    phoneNumber: cleanPhone,
+                    name: adminName,
+                    isAdmin: true,
+                    active: true,
+                    messageCount: 0,
+                    lastActivity: new Date(),
+                    groups: [{
+                        groupId: leadershipGroup._id,
+                        joinedAt: new Date()
+                    }]
+                });
+
+                // ✨ Send admin welcome SMS to new admin
+                const welcomeMessage = await this.sendAdminWelcomeSMS(cleanPhone, adminName, admin.name);
+
+                // Log the new admin creation for audit trail
+                await this.dbManager.recordAnalytic('new_admin_created', 1, 
+                    `Created by: ${admin.name}, New Admin: ${adminName} (${cleanPhone}), Welcome SMS: ${welcomeMessage.success ? 'Sent' : 'Failed'}`);
+
+                const durationMs = Date.now() - startTime;
+                await this.recordPerformanceMetric('admin_creation', durationMs, true);
+
+                logger.info(`✅ Admin ${admin.name} created new administrator: ${adminName} (${cleanPhone})`);
+
+                // Get updated counts
+                const totalMembers = await this.dbManager.getAllActiveMembers();
+                const adminCount = totalMembers.filter(m => m.isAdmin).length;
+
+                let successMessage = `🔑 NEW ADMIN CREATED SUCCESSFULLY!\n\n`;
+                successMessage += `👤 Name: ${adminName}\n`;
+                successMessage += `📱 Phone: ${cleanPhone}\n`;
+                successMessage += `🔑 Status: Administrator (NEW)\n`;
+                successMessage += `🏛️ Group: Church Leadership\n`;
+                successMessage += `📊 Total admins: ${adminCount}\n`;
+                successMessage += `📊 Total members: ${totalMembers.length}\n\n`;
+                successMessage += `✅ FULL ADMIN PRIVILEGES GRANTED:\n`;
+                successMessage += `• ADD - Add new congregation members\n`;
+                successMessage += `• REMOVE - Remove members from system\n`;
+                successMessage += `• ADMIN - Manage administrator privileges\n`;
+                successMessage += `• WIPE - Emergency database wipe\n`;
+                successMessage += `• CLEANUP - Database maintenance\n`;
+                successMessage += `• Access to all admin endpoints\n\n`;
+
+                // Add welcome SMS status to admin response
+                if (welcomeMessage.success) {
+                    successMessage += `📩 Admin welcome SMS sent successfully`;
+                    logger.info(`📩 Admin welcome SMS delivered to ${adminName} (${cleanPhone}): ${welcomeMessage.sid}`);
+                } else {
+                    successMessage += `⚠️ Admin welcome SMS failed: ${welcomeMessage.error}`;
+                    logger.warn(`📩 Admin welcome SMS failed to ${adminName} (${cleanPhone}): ${welcomeMessage.error}`);
+                }
+
+                return successMessage;
+
+            } catch (createError) {
+                // Enhanced error handling for specific MongoDB errors
+                if (createError.code === 11000) {
+                    // Duplicate key error
+                    const duplicateField = createError.keyPattern ? Object.keys(createError.keyPattern)[0] : 'phoneNumber';
+                    return `❌ Phone number already exists in database!\n📱 Number: ${cleanPhone}\n💡 Use a different phone number or check existing members.`;
+                } else if (createError.name === 'ValidationError') {
+                    // Mongoose validation error
+                    const validationErrors = Object.values(createError.errors).map(err => err.message).join(', ');
+                    return `❌ Validation error: ${validationErrors}`;
+                } else {
+                    // Other database errors
+                    logger.error(`❌ Database error creating admin: ${createError.message}`);
+                    return `❌ Database error: Unable to create admin. Please try again or contact tech support.`;
+                }
+            }
+        }
+
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('admin_command', durationMs, false, error.message);
+        
+        logger.error(`❌ ADMIN command error: ${error.message}`);
+        logger.error(`❌ Stack trace: ${error.stack}`);
+        
+        // Provide more specific error information
+        if (error.name === 'MongoNetworkError') {
+            return "❌ Database connection error. Please try again in a moment.";
+        } else if (error.name === 'MongoServerError' && error.code === 11000) {
+            return "❌ Admin with this phone number already exists in the system.";
+        } else {
+            return "❌ System error occurred while managing admin privileges.\n\n💡 Tech team has been notified.";
+        }
+    }
+}
+
+
+
+// ✨ NEW METHOD: Send admin promotion SMS
+async sendAdminPromotionSMS(adminPhone, adminName, promoterName) {
+    const startTime = Date.now();
+    logger.info(`📩 Sending admin promotion SMS to: ${adminName} (${adminPhone})`);
+
+    try {
+        // Create a personalized admin promotion message
+        const promotionMessage = this.createAdminPromotionMessage(adminName, promoterName);
+        
+        // Send the promotion SMS
+        const result = await this.sendSMS(adminPhone, promotionMessage, 2); // 2 retries for admin messages
+        
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('admin_promotion_sms', durationMs, result.success);
+
+        if (result.success) {
+            // Log successful promotion SMS
+            await this.dbManager.recordAnalytic('admin_promotion_sms_sent', 1, 
+                `New Admin: ${adminName} (${adminPhone}), Promoted by: ${promoterName}`);
+            
+            logger.info(`✅ Admin promotion SMS sent to ${adminName}: ${result.sid}`);
+            return {
+                success: true,
+                sid: result.sid,
+                message: "Admin promotion SMS sent successfully"
+            };
+        } else {
+            // Log failed promotion SMS
+            await this.dbManager.recordAnalytic('admin_promotion_sms_failed', 1, 
+                `New Admin: ${adminName} (${adminPhone}), Error: ${result.error}`);
+            
+            logger.error(`❌ Admin promotion SMS failed to ${adminName}: ${result.error}`);
+            return {
+                success: false,
+                error: result.error,
+                message: "Admin promotion SMS delivery failed"
+            };
+        }
+
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('admin_promotion_sms', durationMs, false, error.message);
+        
+        logger.error(`❌ Admin promotion SMS system error for ${adminName}: ${error.message}`);
+        return {
+            success: false,
+            error: error.message,
+            message: "Admin promotion SMS system error"
+        };
+    }
+}
+
+
+
+// ✨ NEW METHOD: Send admin welcome SMS for new admin creation
+async sendAdminWelcomeSMS(adminPhone, adminName, creatorName) {
+    const startTime = Date.now();
+    logger.info(`📩 Sending admin welcome SMS to new admin: ${adminName} (${adminPhone})`);
+
+    try {
+        // Create a personalized admin welcome message
+        const welcomeMessage = this.createAdminWelcomeMessage(adminName, creatorName);
+        
+        // Send the welcome SMS
+        const result = await this.sendSMS(adminPhone, welcomeMessage, 2); // 2 retries for admin messages
+        
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('admin_welcome_sms', durationMs, result.success);
+
+        if (result.success) {
+            // Log successful welcome SMS
+            await this.dbManager.recordAnalytic('admin_welcome_sms_sent', 1, 
+                `New Admin: ${adminName} (${adminPhone}), Created by: ${creatorName}`);
+            
+            logger.info(`✅ Admin welcome SMS sent to ${adminName}: ${result.sid}`);
+            return {
+                success: true,
+                sid: result.sid,
+                message: "Admin welcome SMS sent successfully"
+            };
+        } else {
+            // Log failed welcome SMS
+            await this.dbManager.recordAnalytic('admin_welcome_sms_failed', 1, 
+                `New Admin: ${adminName} (${adminPhone}), Error: ${result.error}`);
+            
+            logger.error(`❌ Admin welcome SMS failed to ${adminName}: ${result.error}`);
+            return {
+                success: false,
+                error: result.error,
+                message: "Admin welcome SMS delivery failed"
+            };
+        }
+
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('admin_welcome_sms', durationMs, false, error.message);
+        
+        logger.error(`❌ Admin welcome SMS system error for ${adminName}: ${error.message}`);
+        return {
+            success: false,
+            error: error.message,
+            message: "Admin welcome SMS system error"
+        };
+    }
+}
+
+
+
+// ✨ NEW METHOD: Create admin promotion message
+createAdminPromotionMessage(adminName, promoterName) {
+    const promotionMessage = `🔑 ADMINISTRATOR PRIVILEGES GRANTED
+
+Congratulations ${adminName}!
+
+You have been promoted to Church Administrator by ${promoterName}.
+
+🔑 YOUR NEW ADMIN PRIVILEGES:
+═══════════════════════════════════
+
+✅ ADD +1234567890 MemberName
+   └─ Add new congregation members
+
+✅ REMOVE +1234567890 MemberName  
+   └─ Remove members from system
+
+✅ ADMIN +1234567890 AdminName
+   └─ Grant admin privileges to others
+
+✅ WIPE CONFIRM
+   └─ Emergency complete database wipe
+
+✅ CLEANUP STATUS/DUPLICATES/ORPHANED
+   └─ Database maintenance operations
+
+✅ Administrative dashboard access
+✅ System analytics and monitoring
+✅ All congregation management tools
+
+⚠️ IMPORTANT RESPONSIBILITIES:
+═══════════════════════════════════
+• Admin commands are permanently logged
+• Use WIPE command only in emergencies
+• Coordinate with other admins on major changes
+• Ensure congregation data privacy and security
+
+📱 GETTING STARTED:
+Send "HELP" to see all available commands
+Send "CLEANUP STATUS" to check system health
+
+🏛️ WELCOME TO THE ADMINISTRATIVE TEAM!
+
+Your admin privileges are now active. Use them wisely to serve our church community.
+
+- YesuWay Church Leadership Team`;
+
+    return promotionMessage;
+}
+
+
+
+// ✨ NEW METHOD: Create admin welcome message for new admins
+createAdminWelcomeMessage(adminName, creatorName) {
+    const welcomeMessage = `🏛️ WELCOME TO YESUWAY CHURCH ADMINISTRATION
+
+Welcome ${adminName}!
+
+${creatorName} has added you as a Church Administrator with full system privileges.
+
+🔑 YOUR ADMINISTRATOR ACCOUNT:
+═══════════════════════════════════
+✅ Full church communication system access
+✅ Complete congregation management tools
+✅ Advanced database administration
+✅ Emergency system controls
+✅ Analytics and monitoring dashboard
+
+📱 ESSENTIAL ADMIN COMMANDS:
+═══════════════════════════════════
+
+🔧 MEMBER MANAGEMENT:
+• ADD +1234567890 MemberName
+  └─ Add new members with welcome SMS
+
+• REMOVE +1234567890 MemberName
+  └─ Permanently remove members
+
+👑 ADMIN MANAGEMENT:
+• ADMIN +1234567890 AdminName
+  └─ Grant admin privileges to trusted members
+
+🗄️ DATABASE OPERATIONS:
+• CLEANUP STATUS - Check system health
+• CLEANUP DUPLICATES - Remove duplicates
+• WIPE CONFIRM - Emergency complete reset
+
+📊 SYSTEM MONITORING:
+• Visit /health endpoint for system status
+• Use /analytics for detailed metrics
+• Monitor congregation engagement
+
+⚠️ CRITICAL ADMIN RESPONSIBILITIES:
+═══════════════════════════════════
+🛡️ Protect congregation member privacy
+🔐 Secure admin credentials and access
+📝 All admin actions are permanently logged
+⚠️ WIPE command destroys ALL data permanently
+🤝 Coordinate with other administrators
+
+🎯 GETTING STARTED:
+═══════════════════════════════════
+1. Send "HELP" to see all commands
+2. Send "CLEANUP STATUS" to check database
+3. Review current congregation with "CLEANUP STATUS"
+4. Contact ${creatorName} for any questions
+
+🙏 SERVING THE CHURCH:
+"As each has received a gift, use it to serve one another, as good stewards of God's varied grace." - 1 Peter 4:10
+
+Welcome to the YesuWay Church administrative team!
+
+- Church Leadership Team`;
+
+    return welcomeMessage;
 }
 
 async getCleanupStatus() {
@@ -1858,8 +2476,9 @@ async cleanupOrphanedData() {
 
 
 
-// Modify the existing handleIncomingMessage method to include ADD command detection
-// Enhanced handleIncomingMessage method with both ADD and REMOVE commands
+// Enhanced handleIncomingMessage method with WIPE and ADMIN commands
+// Replace your existing handleIncomingMessage method in app.js with this version
+
 async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
     logger.info(`📨 Incoming message from ${fromPhone}`);
 
@@ -1899,26 +2518,9 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
 
         // Check for HELP command
         if (messageBody.toUpperCase() === 'HELP') {
-            let helpMessage = "📋 YESUWAY CHURCH SMS SYSTEM\n\n" +
-                            "✅ CLEANUP STATUS - Show database health status\n" +
-                            "✅ CLEANUP DUPLICATES - Remove duplicate phone numbers\n" +
-                            "✅ CLEANUP PHONE +1234567890 - Remove all data for phone number\n" +
-                            "✅ CLEANUP ORPHANED - Remove inactive members & orphaned data\n\n" +
-                            "📱 Text HELP for this message\n" +
-                            "🏛️ Production system - serving 24/7\n" +
-                            "🗄️ Powered by MongoDB for scalable performance";
-            
-            // Add admin commands to help if user is admin
-            if (member.isAdmin) {
-                helpMessage += "\n\n🔑 ADMIN COMMANDS:\n" +
-                             "• ADD +1234567890 MemberName - Add new member\n" +
-                             "• REMOVE +1234567890 MemberName - Remove member";
-            }
-            
-            return helpMessage;
+            return await this.generateHelpMessage(member);
         }
 
-        
         // Check for ADD command (admin only)
         if (messageBody.toUpperCase().startsWith('ADD ')) {
             return await this.handleAddMemberCommand(fromPhone, messageBody);
@@ -1929,9 +2531,14 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
             return await this.handleRemoveMemberCommand(fromPhone, messageBody);
         }
 
-        // Check for HELP command
-        if (messageBody.toUpperCase() === 'HELP') {
-            return await this.generateHelpMessage(member);
+        // Check for WIPE command (admin only) - DANGEROUS OPERATION
+        if (messageBody.toUpperCase().startsWith('WIPE ') || messageBody.toUpperCase() === 'WIPE') {
+            return await this.handleWipeCommand(fromPhone, messageBody);
+        }
+
+        // Check for ADMIN command (admin only) - PRIVILEGE MANAGEMENT
+        if (messageBody.toUpperCase().startsWith('ADMIN ')) {
+            return await this.handleAdminCommand(fromPhone, messageBody);
         }
 
         // Check for CLEANUP command (admin only)
