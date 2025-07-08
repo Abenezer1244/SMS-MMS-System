@@ -159,6 +159,7 @@ class ProductionChurchSMS {
     }
 
     initializeServices() {
+
         if (this.isValidTwilioCredentials()) {
             try {
                 this.twilioClient = twilio(config.twilio.accountSid, config.twilio.authToken);
@@ -228,6 +229,21 @@ class ProductionChurchSMS {
         }
 
         this.logServiceStatus();
+
+                if (process.env.CLOUDFLARE_STREAM_ENABLED === 'true') {
+            this.validateCloudflareStreamConfig().then(isValid => {
+                if (isValid) {
+                    logger.info('🎥 Cloudflare Stream: ✅ Ready for professional video processing');
+                } else {
+                    logger.warn('🎥 Cloudflare Stream: ❌ Configuration issues detected');
+                    logger.info('💡 Videos will use original quality processing');
+                }
+            }).catch(error => {
+                logger.error('🎥 Cloudflare Stream validation error:', error.message);
+            });
+        } else {
+            logger.info('🎥 Cloudflare Stream: Disabled (set CLOUDFLARE_STREAM_ENABLED=true to enable)');
+        }
     }
 
     isValidTwilioCredentials() {
@@ -276,6 +292,7 @@ class ProductionChurchSMS {
         logger.info(`   ☁️ R2 Storage: ${this.r2Client ? '✅ Connected' : '❌ Unavailable (Local Mode)'}`);
         logger.info(`   🗄️ MongoDB: ${this.dbManager.isConnected ? '✅ Connected' : '⏳ Connecting...'}`);
         logger.info(`   🛡️ Security: ✅ Production Ready`);
+        logger.info(`   🎥 Cloudflare Stream: ${process.env.CLOUDFLARE_STREAM_ENABLED === 'true' ? '✅ Enabled (HD Video Processing)' : '❌ Disabled'}`);
         
         if (!this.twilioClient) {
             logger.warn('⚠️ IMPORTANT: SMS sending disabled - configure Twilio credentials for production');
@@ -480,6 +497,270 @@ class ProductionChurchSMS {
         }
     }
 
+    // 🎥 CLOUDFLARE STREAM INTEGRATION - Add these methods to your ProductionChurchSMS class
+
+// 1. Add this after your existing downloadMediaFromTwilio method
+async processVideoWithCloudflareStream(mediaData, mediaIndex) {
+    const startTime = Date.now();
+    
+    try {
+        logger.info(`🎥 Processing video ${mediaIndex} with Cloudflare Stream`);
+        
+        // Check if Cloudflare Stream is enabled
+        if (process.env.CLOUDFLARE_STREAM_ENABLED !== 'true') {
+            throw new Error('Cloudflare Stream not enabled');
+        }
+        
+        const streamApiUrl = `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/stream`;
+        
+        // Create form data for upload
+        const FormData = require('form-data');
+        const formData = new FormData();
+        
+        // Add the video file
+        formData.append('file', mediaData.content, {
+            filename: `yesuway_church_video_${mediaIndex}_${Date.now()}.mp4`,
+            contentType: mediaData.mimeType
+        });
+        
+        // Add metadata
+        formData.append('meta', JSON.stringify({
+            name: `YesuWay Church Video ${mediaIndex} - ${new Date().toLocaleDateString()}`,
+            requireSignedURLs: false,
+            allowedOrigins: ['*'],
+            creator: 'YesuWay Church SMS System'
+        }));
+
+        logger.info(`📤 Uploading ${(mediaData.size / 1024 / 1024).toFixed(2)}MB video to Cloudflare Stream...`);
+
+        // Upload to Cloudflare Stream
+        const streamResponse = await axios.post(streamApiUrl, formData, {
+            headers: {
+                'Authorization': `Bearer ${process.env.CLOUDFLARE_STREAM_TOKEN}`,
+                ...formData.getHeaders()
+            },
+            timeout: 300000, // 5 minutes timeout for large videos
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity
+        });
+
+        if (streamResponse.status === 200 && streamResponse.data.success) {
+            const videoId = streamResponse.data.result.uid;
+            const videoInfo = streamResponse.data.result;
+            
+            logger.info(`✅ Video uploaded to Cloudflare Stream: ${videoId}`);
+            
+            // Create an optimized HTML5 video player
+            const optimizedVideoHtml = this.createCloudflareStreamPlayer(videoId, mediaIndex, videoInfo);
+            
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('cloudflare_stream_processing', durationMs, true);
+            
+            // Log the successful processing
+            if (this.dbManager.isConnected) {
+                await this.dbManager.recordAnalytic('video_stream_processed', 1, 
+                    `Video ${mediaIndex}, Stream ID: ${videoId}, Original Size: ${(mediaData.size / 1024 / 1024).toFixed(2)}MB, Processing Time: ${(durationMs / 1000).toFixed(1)}s`);
+            }
+            
+            logger.info(`✅ Video ${mediaIndex} processed with Cloudflare Stream in ${(durationMs / 1000).toFixed(1)}s`);
+            
+            return {
+                success: true,
+                content: Buffer.from(optimizedVideoHtml),
+                mimeType: 'text/html',
+                qualityInfo: `cloudflare_stream_hd_${(mediaData.size / 1024 / 1024).toFixed(1)}MB`,
+                streamId: videoId,
+                processingTime: durationMs
+            };
+        } else {
+            const errorMessage = streamResponse.data.errors?.[0]?.message || 'Unknown Cloudflare Stream API error';
+            throw new Error(`Cloudflare Stream API error: ${errorMessage}`);
+        }
+        
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('cloudflare_stream_processing', durationMs, false, error.message);
+        
+        logger.error(`❌ Cloudflare Stream processing failed for video ${mediaIndex}: ${error.message}`);
+        
+        // Log the failure for monitoring
+        if (this.dbManager.isConnected) {
+            await this.dbManager.recordAnalytic('video_stream_failed', 1, 
+                `Video ${mediaIndex}, Error: ${error.message}, Size: ${(mediaData.size / 1024 / 1024).toFixed(2)}MB`);
+        }
+        
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+}
+
+// 2. Add this method to create the professional video player
+createCloudflareStreamPlayer(videoId, mediaIndex, videoInfo) {
+    const playerHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="YesuWay Church Video ${mediaIndex} - Professional HD streaming">
+    <title>🏛️ YesuWay Church Video ${mediaIndex}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 10px;
+        }
+        .container { 
+            max-width: 900px; 
+            margin: 20px auto; 
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+            overflow: hidden;
+        }
+        .header { 
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 25px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .quality-badge { 
+            background: rgba(255,255,255,0.2);
+            backdrop-filter: blur(10px);
+            color: white; 
+            padding: 8px 16px; 
+            border-radius: 25px; 
+            font-size: 14px;
+            font-weight: 600;
+            display: inline-block;
+            border: 1px solid rgba(255,255,255,0.3);
+        }
+        .video-wrapper {
+            position: relative;
+            background: #000;
+            padding: 0;
+        }
+        .video-frame {
+            width: 100%;
+            height: 500px;
+            border: none;
+            display: block;
+        }
+        .info-section { 
+            padding: 25px;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            text-align: center;
+        }
+        .features {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        .feature {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #495057;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .footer {
+            background: #2c3e50;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        .footer h3 {
+            font-size: 18px;
+            margin-bottom: 8px;
+        }
+        .footer p {
+            color: #bdc3c7;
+            font-size: 14px;
+        }
+        
+        @media (max-width: 768px) {
+            .container { margin: 10px; }
+            .video-frame { height: 300px; }
+            .header h1 { font-size: 24px; }
+            .features { gap: 15px; }
+            .feature { font-size: 13px; }
+        }
+        
+        @media (max-width: 480px) {
+            body { padding: 5px; }
+            .header { padding: 20px 15px; }
+            .info-section { padding: 20px 15px; }
+            .video-frame { height: 250px; }
+            .features { flex-direction: column; gap: 10px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>🏛️ YesuWay Church Video ${mediaIndex}</h1>
+            <div class="quality-badge">✨ HD Quality • Professional Streaming</div>
+        </header>
+        
+        <div class="video-wrapper">
+            <iframe 
+                class="video-frame"
+                src="https://customer-${process.env.CLOUDFLARE_CUSTOMER_CODE}.cloudflarestream.com/${videoId}/iframe?preload=true&autoplay=false&loop=false&muted=false&controls=true"
+                allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture; fullscreen"
+                allowfullscreen="true">
+            </iframe>
+        </div>
+        
+        <div class="info-section">
+            <div class="features">
+                <div class="feature">🎥 HD Video Quality</div>
+                <div class="feature">📱 Mobile Optimized</div>
+                <div class="feature">⚡ Fast Loading</div>
+                <div class="feature">🔄 Adaptive Streaming</div>
+            </div>
+            <p style="color: #6c757d; font-size: 14px; margin: 0;">
+                Professional video streaming powered by Cloudflare • Optimized for all devices
+            </p>
+        </div>
+        
+        <footer class="footer">
+            <h3>💚 YesuWay Church</h3>
+            <p>Connecting our congregation through technology and faith</p>
+        </footer>
+    </div>
+    
+    <script>
+        // Analytics tracking for video engagement
+        document.addEventListener('DOMContentLoaded', function() {
+            const iframe = document.querySelector('.video-frame');
+            let engagementLogged = false;
+            
+            iframe.addEventListener('load', function() {
+                if (!engagementLogged) {
+                    console.log('YesuWay Church Video ${mediaIndex} loaded successfully');
+                    engagementLogged = true;
+                }
+            });
+        });
+    </script>
+</body>
+</html>`;
+
+    return playerHtml;
+}
+
     generateCleanFilename(mimeType, mediaIndex = 1) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '').substring(0, 15);
 
@@ -567,88 +848,212 @@ class ProductionChurchSMS {
         }
     }
 
-    async processMediaFiles(messageId, mediaUrls) {
-        logger.info(`🔄 Processing ${mediaUrls.length} media files for message ${messageId}`);
+// 3. REPLACE your existing processMediaFiles method with this enhanced version
+async processMediaFiles(messageId, mediaUrls) {
+    logger.info(`🔄 Processing ${mediaUrls.length} media files with Cloudflare Stream integration for message ${messageId}`);
 
-        const processedLinks = [];
-        const processingErrors = [];
+    const processedLinks = [];
+    const processingErrors = [];
 
-        for (let i = 0; i < mediaUrls.length; i++) {
-            const media = mediaUrls[i];
-            const mediaUrl = media.url || '';
-            const mediaType = media.type || 'unknown';
+    for (let i = 0; i < mediaUrls.length; i++) {
+        const media = mediaUrls[i];
+        const mediaUrl = media.url || '';
+        const mediaType = media.type || 'unknown';
 
-            try {
-                logger.info(`📎 Processing media ${i + 1}/${mediaUrls.length}: ${mediaType}`);
+        try {
+            logger.info(`📎 Processing media ${i + 1}/${mediaUrls.length}: ${mediaType}`);
 
-                const mediaData = await this.downloadMediaFromTwilio(mediaUrl);
+            const mediaData = await this.downloadMediaFromTwilio(mediaUrl);
 
-                if (!mediaData) {
-                    const errorMsg = `Failed to download media ${i + 1}`;
-                    processingErrors.push(errorMsg);
-                    logger.error(errorMsg);
-                    continue;
-                }
+            if (!mediaData) {
+                const errorMsg = `Failed to download media ${i + 1}`;
+                processingErrors.push(errorMsg);
+                logger.error(errorMsg);
+                continue;
+            }
 
-                const fileSize = mediaData.size;
-                const compressionDetected = fileSize >= 4.8 * 1024 * 1024;
+            let processedContent = mediaData.content;
+            let finalMimeType = mediaData.mimeType;
+            let qualityInfo = 'original';
+            let isStreamOptimized = false;
 
-                const { cleanFilename, displayName } = this.generateCleanFilename(
-                    mediaData.mimeType,
-                    i + 1
-                );
-
-                const publicUrl = await this.uploadToR2(
-                    mediaData.content,
-                    cleanFilename,
-                    mediaData.mimeType,
-                    {
-                        'original-size': fileSize.toString(),
-                        'compression-detected': compressionDetected.toString(),
-                        'media-index': i.toString(),
-                        'display-name': displayName
-                    }
-                );
-
-                if (publicUrl) {
-                    if (this.dbManager.isConnected) {
-                        await this.dbManager.createMediaFile({
-                            messageId: messageId,
-                            originalUrl: mediaUrl,
-                            r2ObjectKey: cleanFilename,
-                            publicUrl: publicUrl,
-                            cleanFilename: cleanFilename.split('/').pop(),
-                            displayName: displayName,
-                            originalSize: fileSize,
-                            finalSize: fileSize,
-                            mimeType: mediaData.mimeType,
-                            fileHash: mediaData.hash,
-                            compressionDetected: compressionDetected,
-                            uploadStatus: 'completed'
-                        });
-                    }
-
-                    processedLinks.push({
-                        url: publicUrl,
-                        displayName: displayName,
-                        type: mediaData.mimeType
-                    });
-                    logger.info(`✅ Media ${i + 1} processed successfully`);
+            // 🎥 CLOUDFLARE STREAM PROCESSING FOR VIDEOS
+            if (mediaData.mimeType.includes('video') && process.env.CLOUDFLARE_STREAM_ENABLED === 'true') {
+                logger.info(`🎥 Video detected (${(mediaData.size / 1024 / 1024).toFixed(2)}MB), processing with Cloudflare Stream...`);
+                
+                const streamResult = await this.processVideoWithCloudflareStream(mediaData, i + 1);
+                if (streamResult.success) {
+                    processedContent = streamResult.content;
+                    finalMimeType = streamResult.mimeType;
+                    qualityInfo = streamResult.qualityInfo;
+                    isStreamOptimized = true;
+                    logger.info(`✅ Video ${i + 1} processed with Cloudflare Stream: ${streamResult.qualityInfo}`);
                 } else {
-                    const errorMsg = `Failed to upload media ${i + 1} to R2`;
-                    processingErrors.push(errorMsg);
-                    logger.error(errorMsg);
+                    logger.warn(`⚠️ Cloudflare Stream processing failed for video ${i + 1}, using original: ${streamResult.error}`);
+                    // Continue with original video processing
                 }
-            } catch (error) {
-                const errorMsg = `Error processing media ${i + 1}: ${error.message}`;
+            }
+
+            // Enhanced filename generation for stream-optimized content
+            const { cleanFilename, displayName } = this.generateCleanFilename(finalMimeType, i + 1);
+
+            const publicUrl = await this.uploadToR2(
+                processedContent,
+                cleanFilename,
+                finalMimeType,
+                {
+                    'original-size': mediaData.size.toString(),
+                    'final-size': processedContent.length.toString(),
+                    'quality-info': qualityInfo,
+                    'stream-optimized': isStreamOptimized.toString(),
+                    'media-index': i.toString(),
+                    'display-name': displayName,
+                    'processing-timestamp': new Date().toISOString(),
+                    'church-system': 'yesuway-production-stream'
+                }
+            );
+
+            if (publicUrl) {
+                // Enhanced database storage with stream information
+                if (this.dbManager.isConnected) {
+                    await this.dbManager.createMediaFile({
+                        messageId: messageId,
+                        originalUrl: mediaUrl,
+                        r2ObjectKey: cleanFilename,
+                        publicUrl: publicUrl,
+                        cleanFilename: cleanFilename.split('/').pop(),
+                        displayName: displayName,
+                        originalSize: mediaData.size,
+                        finalSize: processedContent.length,
+                        mimeType: finalMimeType,
+                        fileHash: mediaData.hash,
+                        compressionDetected: isStreamOptimized, // True if we used Cloudflare Stream
+                        uploadStatus: 'completed',
+                        qualityInfo: qualityInfo,
+                        streamOptimized: isStreamOptimized,
+                        processingMetadata: {
+                            cloudflareStreamEnabled: process.env.CLOUDFLARE_STREAM_ENABLED === 'true',
+                            originalMimeType: mediaData.mimeType,
+                            qualityPreservation: isStreamOptimized,
+                            processingTimestamp: new Date()
+                        }
+                    });
+                }
+
+                processedLinks.push({
+                    url: publicUrl,
+                    displayName: displayName,
+                    type: finalMimeType,
+                    qualityInfo: qualityInfo,
+                    streamOptimized: isStreamOptimized
+                });
+                
+                if (isStreamOptimized) {
+                    logger.info(`✅ Video ${i + 1} processed with Cloudflare Stream and uploaded successfully`);
+                } else {
+                    logger.info(`✅ Media ${i + 1} processed successfully (original quality)`);
+                }
+            } else {
+                const errorMsg = `Failed to upload media ${i + 1} to R2`;
                 processingErrors.push(errorMsg);
                 logger.error(errorMsg);
             }
+        } catch (error) {
+            const errorMsg = `Error processing media ${i + 1}: ${error.message}`;
+            processingErrors.push(errorMsg);
+            logger.error(errorMsg);
         }
-
-        logger.info(`✅ Media processing complete: ${processedLinks.length} successful, ${processingErrors.length} errors`);
-        return { processedLinks, processingErrors };
     }
+
+    // Enhanced completion logging
+    const streamProcessedCount = processedLinks.filter(link => link.streamOptimized).length;
+    const originalProcessedCount = processedLinks.filter(link => !link.streamOptimized).length;
+    
+    logger.info(`✅ Media processing complete: ${processedLinks.length} successful (${streamProcessedCount} Cloudflare Stream, ${originalProcessedCount} original), ${processingErrors.length} errors`);
+    
+    // Record analytics for stream usage
+    if (this.dbManager.isConnected && streamProcessedCount > 0) {
+        await this.dbManager.recordAnalytic('cloudflare_stream_usage', streamProcessedCount, 
+            `Total videos processed: ${streamProcessedCount}, Total media items: ${processedLinks.length}`);
+    }
+    
+    return { processedLinks, processingErrors };
+}
+
+
+// 4. ADD this method to enhance your message formatting with stream indicators
+formatMessageWithMedia(originalMessage, sender, mediaLinks = null) {
+    if (mediaLinks && mediaLinks.length > 0) {
+        let messageText = `💬 ${sender.name}:\n${originalMessage}\n\n`;
+        
+        mediaLinks.forEach((mediaItem, index) => {
+            const qualityIndicator = mediaItem.streamOptimized ? '🎥 HD' : '📎';
+            const streamBadge = mediaItem.streamOptimized ? ' [Professional Streaming]' : '';
+            messageText += `${qualityIndicator} ${mediaItem.displayName}${streamBadge}: ${mediaItem.url}\n`;
+        });
+        
+        return messageText.trim();
+    } else {
+        return `💬 ${sender.name}:\n${originalMessage}`;
+    }
+}
+
+
+
+
+// 5. ADD this method to check Cloudflare Stream configuration
+async validateCloudflareStreamConfig() {
+    try {
+        logger.info('🔧 Validating Cloudflare Stream configuration...');
+        
+        const requiredVars = [
+            'CLOUDFLARE_STREAM_ENABLED',
+            'CLOUDFLARE_ACCOUNT_ID', 
+            'CLOUDFLARE_STREAM_TOKEN',
+            'CLOUDFLARE_CUSTOMER_CODE'
+        ];
+        
+        const missing = requiredVars.filter(varName => !process.env[varName]);
+        
+        if (missing.length > 0) {
+            logger.warn(`⚠️ Missing Cloudflare Stream environment variables: ${missing.join(', ')}`);
+            return false;
+        }
+        
+        if (process.env.CLOUDFLARE_STREAM_ENABLED !== 'true') {
+            logger.info('ℹ️ Cloudflare Stream is disabled');
+            return false;
+        }
+        
+        // Test API connectivity
+        const testUrl = `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/stream`;
+        
+        try {
+            const response = await axios.get(testUrl, {
+                headers: {
+                    'Authorization': `Bearer ${process.env.CLOUDFLARE_STREAM_TOKEN}`
+                },
+                timeout: 10000
+            });
+            
+            if (response.status === 200 && response.data.success) {
+                logger.info('✅ Cloudflare Stream configuration validated successfully');
+                return true;
+            } else {
+                logger.error('❌ Cloudflare Stream API test failed:', response.data.errors);
+                return false;
+            }
+        } catch (apiError) {
+            logger.error('❌ Cloudflare Stream API connectivity test failed:', apiError.message);
+            return false;
+        }
+        
+    } catch (error) {
+        logger.error('❌ Cloudflare Stream configuration validation error:', error.message);
+        return false;
+    }
+}
+
 
     async getAllActiveMembers(excludePhone = null) {
         try {
@@ -795,9 +1200,9 @@ class ProductionChurchSMS {
             let largeMediaCount = 0;
 
             if (mediaUrls && mediaUrls.length > 0) {
-                logger.info(`🔄 Processing ${mediaUrls.length} media files...`);
+                logger.info(`🔄 Processing ${mediaUrls.length} media files with quality preservation...`);
                 try {
-                    const { processedLinks, processingErrors } = await this.processMediaFiles(messageId, mediaUrls);
+                    const { processedLinks, processingErrors } = await this.processMediaFilesWithQualityPreservation(messageId, mediaUrls);
                     cleanMediaLinks = processedLinks;
                     largeMediaCount = processedLinks.length;
 
@@ -805,7 +1210,11 @@ class ProductionChurchSMS {
                         logger.warn(`⚠️ Media processing errors: ${processingErrors.join(', ')}`);
                     }
                 } catch (mediaError) {
-                    logger.error(`❌ Media processing failed: ${mediaError.message}`);
+                    logger.error(`❌ Quality-preserved media processing failed: ${mediaError.message}`);
+                    // Fallback to original processing
+                    const { processedLinks, processingErrors } = await this.processMediaFiles(messageId, mediaUrls);
+                    cleanMediaLinks = processedLinks;
+                    largeMediaCount = processedLinks.length;
                 }
             }
 
@@ -2284,6 +2693,450 @@ async handleAdminCommand(adminPhone, commandText) {
     }
 }
 
+// INDUSTRIAL VIDEO QUALITY SOLUTION - Add to your ProductionChurchSMS class
+
+// Enhanced media processing with video quality preservation
+async processMediaFilesWithQualityPreservation(messageId, mediaUrls) {
+    logger.info(`🎥 Processing ${mediaUrls.length} media files with quality preservation for message ${messageId}`);
+
+    const processedLinks = [];
+    const processingErrors = [];
+
+    for (let i = 0; i < mediaUrls.length; i++) {
+        const media = mediaUrls[i];
+        const mediaUrl = media.url || '';
+        const mediaType = media.type || 'unknown';
+
+        try {
+            logger.info(`📎 Processing media ${i + 1}/${mediaUrls.length}: ${mediaType}`);
+
+            // Download original media from Twilio
+            const mediaData = await this.downloadMediaFromTwilio(mediaUrl);
+
+            if (!mediaData) {
+                const errorMsg = `Failed to download media ${i + 1}`;
+                processingErrors.push(errorMsg);
+                logger.error(errorMsg);
+                continue;
+            }
+
+            let processedContent = mediaData.content;
+            let finalMimeType = mediaData.mimeType;
+            let qualityInfo = 'original';
+
+            // ENHANCED VIDEO PROCESSING
+            if (mediaData.mimeType.includes('video')) {
+                const videoResult = await this.processVideoForQuality(mediaData, i + 1);
+                if (videoResult.success) {
+                    processedContent = videoResult.content;
+                    finalMimeType = videoResult.mimeType;
+                    qualityInfo = videoResult.qualityInfo;
+                    logger.info(`✅ Video ${i + 1} processed: ${videoResult.qualityInfo}`);
+                } else {
+                    logger.warn(`⚠️ Video processing failed, using original: ${videoResult.error}`);
+                }
+            }
+
+            // ENHANCED IMAGE PROCESSING  
+            else if (mediaData.mimeType.includes('image')) {
+                const imageResult = await this.processImageForQuality(mediaData, i + 1);
+                if (imageResult.success) {
+                    processedContent = imageResult.content;
+                    finalMimeType = imageResult.mimeType;
+                    qualityInfo = imageResult.qualityInfo;
+                    logger.info(`✅ Image ${i + 1} processed: ${imageResult.qualityInfo}`);
+                }
+            }
+
+            const { cleanFilename, displayName } = this.generateCleanFilename(finalMimeType, i + 1);
+
+            // Upload to R2 with optimized settings
+            const publicUrl = await this.uploadToR2WithOptimization(
+                processedContent,
+                cleanFilename,
+                finalMimeType,
+                {
+                    'original-size': mediaData.size.toString(),
+                    'final-size': processedContent.length.toString(),
+                    'quality-info': qualityInfo,
+                    'media-index': i.toString(),
+                    'display-name': displayName,
+                    'processing-timestamp': new Date().toISOString()
+                }
+            );
+
+            if (publicUrl) {
+                // Store enhanced media information
+                if (this.dbManager.isConnected) {
+                    await this.dbManager.createMediaFile({
+                        messageId: messageId,
+                        originalUrl: mediaUrl,
+                        r2ObjectKey: cleanFilename,
+                        publicUrl: publicUrl,
+                        cleanFilename: cleanFilename.split('/').pop(),
+                        displayName: displayName,
+                        originalSize: mediaData.size,
+                        finalSize: processedContent.length,
+                        mimeType: finalMimeType,
+                        fileHash: mediaData.hash,
+                        qualityInfo: qualityInfo,
+                        uploadStatus: 'completed',
+                        processingMetadata: {
+                            qualityPreservation: true,
+                            originalMimeType: mediaData.mimeType,
+                            compressionRatio: (processedContent.length / mediaData.size),
+                            processingTime: new Date()
+                        }
+                    });
+                }
+
+                processedLinks.push({
+                    url: publicUrl,
+                    displayName: displayName,
+                    type: finalMimeType,
+                    qualityInfo: qualityInfo
+                });
+                logger.info(`✅ Media ${i + 1} processed successfully with quality preservation`);
+            } else {
+                const errorMsg = `Failed to upload media ${i + 1} to R2`;
+                processingErrors.push(errorMsg);
+                logger.error(errorMsg);
+            }
+        } catch (error) {
+            const errorMsg = `Error processing media ${i + 1}: ${error.message}`;
+            processingErrors.push(errorMsg);
+            logger.error(errorMsg);
+        }
+    }
+
+    logger.info(`✅ Quality-preserved media processing complete: ${processedLinks.length} successful, ${processingErrors.length} errors`);
+    return { processedLinks, processingErrors };
+}
+
+// ENHANCED VIDEO PROCESSING WITH QUALITY PRESERVATION
+async processVideoForQuality(mediaData, mediaIndex) {
+    const startTime = Date.now();
+    
+    try {
+        logger.info(`🎥 Processing video ${mediaIndex} for quality preservation`);
+        
+        // Check if video needs processing based on size and type
+        const originalSize = mediaData.content.length;
+        const sizeMB = originalSize / (1024 * 1024);
+        
+        // For videos larger than 10MB, apply smart compression
+        if (sizeMB > 10) {
+            logger.info(`🎥 Video ${mediaIndex} is ${sizeMB.toFixed(2)}MB, applying smart compression`);
+            
+            // OPTION 1: Convert to optimized MP4 format (requires ffmpeg in production)
+            if (process.env.FFMPEG_ENABLED === 'true') {
+                return await this.compressVideoWithFFmpeg(mediaData, mediaIndex);
+            }
+            
+            // OPTION 2: Use cloud video processing service
+            if (process.env.CLOUDFLARE_STREAM_ENABLED === 'true') {
+                return await this.processVideoWithCloudflareStream(mediaData, mediaIndex);
+            }
+            
+            // OPTION 3: Use AWS Elemental MediaConvert
+            if (process.env.AWS_MEDIACONVERT_ENABLED === 'true') {
+                return await this.processVideoWithMediaConvert(mediaData, mediaIndex);
+            }
+        }
+
+        // For smaller videos or when no processing service is available
+        logger.info(`🎥 Video ${mediaIndex} keeping original quality (${sizeMB.toFixed(2)}MB)`);
+        
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('video_quality_processing', durationMs, true);
+        
+        return {
+            success: true,
+            content: mediaData.content,
+            mimeType: mediaData.mimeType,
+            qualityInfo: `original_quality_${sizeMB.toFixed(1)}MB`
+        };
+        
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('video_quality_processing', durationMs, false, error.message);
+        
+        logger.error(`❌ Video quality processing failed: ${error.message}`);
+        return {
+            success: false,
+            error: error.message,
+            content: mediaData.content,
+            mimeType: mediaData.mimeType,
+            qualityInfo: 'processing_failed'
+        };
+    }
+}
+
+// CLOUDFLARE STREAM INTEGRATION (Recommended for production)
+async processVideoWithCloudflareStream(mediaData, mediaIndex) {
+    const startTime = Date.now();
+    
+    try {
+        logger.info(`🎥 Processing video ${mediaIndex} with Cloudflare Stream`);
+        
+        const streamApiUrl = `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/stream`;
+        
+        // Upload to Cloudflare Stream
+        const formData = new FormData();
+        formData.append('file', new Blob([mediaData.content]), `church_video_${mediaIndex}_${Date.now()}.mp4`);
+        formData.append('meta', JSON.stringify({
+            name: `Church Video ${mediaIndex}`,
+            requireSignedURLs: false
+        }));
+
+        const streamResponse = await axios.post(streamApiUrl, formData, {
+            headers: {
+                'Authorization': `Bearer ${process.env.CLOUDFLARE_STREAM_TOKEN}`,
+                'Content-Type': 'multipart/form-data'
+            },
+            timeout: 300000 // 5 minutes timeout for large videos
+        });
+
+        if (streamResponse.status === 200 && streamResponse.data.success) {
+            const videoId = streamResponse.data.result.uid;
+            const streamUrl = `https://customer-${process.env.CLOUDFLARE_CUSTOMER_CODE}.cloudflarestream.com/${videoId}/manifest/video.m3u8`;
+            const thumbnailUrl = `https://customer-${process.env.CLOUDFLARE_CUSTOMER_CODE}.cloudflarestream.com/${videoId}/thumbnails/thumbnail.jpg`;
+            
+            // Create an HTML5 video player response
+            const optimizedVideoHtml = this.createOptimizedVideoResponse(streamUrl, thumbnailUrl, mediaIndex);
+            
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('cloudflare_stream_processing', durationMs, true);
+            
+            logger.info(`✅ Video ${mediaIndex} processed with Cloudflare Stream: ${videoId}`);
+            
+            return {
+                success: true,
+                content: Buffer.from(optimizedVideoHtml),
+                mimeType: 'text/html',
+                qualityInfo: `cloudflare_stream_optimized`,
+                streamId: videoId,
+                streamUrl: streamUrl,
+                thumbnailUrl: thumbnailUrl
+            };
+        } else {
+            throw new Error(`Cloudflare Stream API error: ${streamResponse.data.errors?.[0]?.message || 'Unknown error'}`);
+        }
+        
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('cloudflare_stream_processing', durationMs, false, error.message);
+        
+        logger.error(`❌ Cloudflare Stream processing failed: ${error.message}`);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+}
+
+
+
+// CREATE OPTIMIZED VIDEO RESPONSE HTML
+createOptimizedVideoResponse(streamUrl, thumbnailUrl, mediaIndex) {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Church Video ${mediaIndex}</title>
+    <style>
+        body { margin: 0; padding: 20px; background: #1a1a1a; font-family: Arial, sans-serif; }
+        .video-container { max-width: 800px; margin: 0 auto; }
+        .church-header { text-align: center; color: white; margin-bottom: 20px; }
+        .video-player { width: 100%; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        .video-info { color: #ccc; text-align: center; margin-top: 15px; }
+        .quality-badge { background: #28a745; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="video-container">
+        <div class="church-header">
+            <h2>🏛️ YesuWay Church Video ${mediaIndex}</h2>
+            <span class="quality-badge">HD Quality Preserved</span>
+        </div>
+        <video class="video-player" controls preload="metadata" poster="${thumbnailUrl}">
+            <source src="${streamUrl}" type="application/x-mpegURL">
+            <p>Your browser doesn't support HTML5 video. <a href="${streamUrl}">Download the video</a> instead.</p>
+        </video>
+        <div class="video-info">
+            <p>Professional quality video streaming powered by Cloudflare</p>
+        </div>
+    </div>
+</body>
+</html>`;
+}
+
+
+
+// AWS ELEMENTAL MEDIACONVERT INTEGRATION
+async processVideoWithMediaConvert(mediaData, mediaIndex) {
+    const startTime = Date.now();
+    
+    try {
+        logger.info(`🎥 Processing video ${mediaIndex} with AWS MediaConvert`);
+        
+        const AWS = require('aws-sdk');
+        const mediaConvert = new AWS.MediaConvert({
+            region: process.env.AWS_REGION || 'us-east-1',
+            endpoint: process.env.AWS_MEDIACONVERT_ENDPOINT
+        });
+        
+        // First, upload original video to S3
+        const s3Key = `church/videos/original_${mediaIndex}_${Date.now()}.mp4`;
+        const s3Url = await this.uploadToS3(mediaData.content, s3Key, mediaData.mimeType);
+        
+        // Create MediaConvert job for optimization
+        const jobParams = {
+            Role: process.env.AWS_MEDIACONVERT_ROLE,
+            Settings: {
+                Inputs: [{
+                    FileInput: s3Url,
+                    VideoSelector: {},
+                    AudioSelectors: {
+                        'Audio Selector 1': {
+                            DefaultSelection: 'DEFAULT'
+                        }
+                    }
+                }],
+                OutputGroups: [{
+                    Name: 'Church Video Optimized',
+                    OutputGroupSettings: {
+                        Type: 'FILE_GROUP_SETTINGS',
+                        FileGroupSettings: {
+                            Destination: `s3://${process.env.AWS_S3_BUCKET}/church/videos/optimized/`
+                        }
+                    },
+                    Outputs: [{
+                        NameModifier: `_optimized_${mediaIndex}`,
+                        VideoDescription: {
+                            CodecSettings: {
+                                Codec: 'H_264',
+                                H264Settings: {
+                                    RateControlMode: 'QVBR',
+                                    QvbrSettings: {
+                                        QvbrQualityLevel: 8 // High quality
+                                    },
+                                    MaxBitrate: 5000000, // 5 Mbps max
+                                    FramerateControl: 'SPECIFIED',
+                                    FramerateNumerator: 30,
+                                    FramerateDenominator: 1
+                                }
+                            },
+                            Width: 1920,
+                            Height: 1080
+                        },
+                        AudioDescriptions: [{
+                            CodecSettings: {
+                                Codec: 'AAC',
+                                AacSettings: {
+                                    Bitrate: 128000,
+                                    SampleRate: 48000
+                                }
+                            }
+                        }],
+                        ContainerSettings: {
+                            Container: 'MP4'
+                        }
+                    }]
+                }]
+            }
+        };
+        
+        const job = await mediaConvert.createJob(jobParams).promise();
+        const jobId = job.Job.Id;
+        
+        // Wait for job completion (with timeout)
+        const optimizedUrl = await this.waitForMediaConvertJob(jobId, 300000); // 5 min timeout
+        
+        // Download optimized video
+        const optimizedContent = await this.downloadFromS3(optimizedUrl);
+        
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('mediaconvert_processing', durationMs, true);
+        
+        logger.info(`✅ Video ${mediaIndex} optimized with MediaConvert`);
+        
+        return {
+            success: true,
+            content: optimizedContent,
+            mimeType: 'video/mp4',
+            qualityInfo: `mediaconvert_optimized_${Math.round(optimizedContent.length / (1024 * 1024))}MB`
+        };
+        
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('mediaconvert_processing', durationMs, false, error.message);
+        
+        logger.error(`❌ MediaConvert processing failed: ${error.message}`);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+}
+
+// ENHANCED R2 UPLOAD WITH VIDEO OPTIMIZATION
+async uploadToR2WithOptimization(fileContent, objectKey, mimeType, metadata = {}) {
+    const startTime = Date.now();
+    try {
+        logger.info(`☁️ Uploading optimized media to R2: ${objectKey}`);
+
+        const uploadMetadata = {
+            'church-system': 'yesuway-production',
+            'upload-timestamp': new Date().toISOString(),
+            'content-hash': crypto.createHash('sha256').update(fileContent).digest('hex'),
+            'optimization-applied': 'true',
+            ...metadata
+        };
+
+        const params = {
+            Bucket: config.r2.bucketName,
+            Key: objectKey,
+            Body: fileContent,
+            ContentType: mimeType,
+            ContentDisposition: 'inline',
+            CacheControl: 'public, max-age=31536000', // 1 year cache
+            Metadata: uploadMetadata,
+            ServerSideEncryption: 'AES256'
+        };
+
+        // Add video-specific optimizations
+        if (mimeType.includes('video')) {
+            params.ContentEncoding = 'identity';
+            params.CacheControl = 'public, max-age=604800'; // 1 week cache for videos
+        }
+
+        await this.r2Client.upload(params).promise();
+
+        let publicUrl;
+        if (config.r2.publicUrl) {
+            publicUrl = `${config.r2.publicUrl.replace(/\/$/, '')}/${objectKey}`;
+        } else {
+            publicUrl = this.r2Client.getSignedUrl('getObject', {
+                Bucket: config.r2.bucketName,
+                Key: objectKey,
+                Expires: 31536000
+            });
+        }
+
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('r2_optimized_upload', durationMs, true);
+
+        logger.info(`✅ Optimized upload successful: ${publicUrl}`);
+        return publicUrl;
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('r2_optimized_upload', durationMs, false, error.message);
+        logger.error(`❌ R2 optimized upload failed: ${error.message}`);
+        return null;
+    }
+}
 
 
 // ✨ NEW METHOD: Send admin promotion SMS
@@ -3048,6 +3901,21 @@ app.get('/health', async (req, res) => {
             }
         } catch (error) {
             healthData.twilio = { status: "error", error: error.message };
+        }
+
+        try {
+            if (process.env.CLOUDFLARE_STREAM_ENABLED === 'true') {
+                const isStreamValid = await smsSystem.validateCloudflareStreamConfig();
+                healthData.cloudflare_stream = {
+                    status: isStreamValid ? "connected" : "configuration_error",
+                    enabled: true,
+                    account_id: process.env.CLOUDFLARE_ACCOUNT_ID ? "configured" : "missing"
+                };
+            } else {
+                healthData.cloudflare_stream = { status: "disabled" };
+            }
+        } catch (error) {
+            healthData.cloudflare_stream = { status: "error", error: error.message };
         }
 
         try {
