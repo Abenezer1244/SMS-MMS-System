@@ -1696,6 +1696,219 @@ Shows database health information:
 }
 
 
+// Add this new method to your ProductionChurchSMS class in app.js
+
+// 🔻 DEMOTE command - Remove admin privileges from administrators
+async handleDemoteCommand(adminPhone, commandText) {
+    const startTime = Date.now();
+    logger.info(`🔻 ADMIN DEMOTE command from ${adminPhone}: ${commandText}`);
+
+    try {
+        // Verify admin privileges
+        const admin = await this.getMemberInfo(adminPhone);
+        if (!admin || !admin.isAdmin) {
+            logger.warn(`❌ Non-admin attempted DEMOTE command: ${adminPhone}`);
+            return "❌ Access denied. Only church administrators can demote other administrators.";
+        }
+
+        // Parse the DEMOTE command: "DEMOTE +12068001141 Abel"
+        const parts = commandText.trim().split(/\s+/);
+        
+        if (parts.length < 2) {
+            return "❌ Invalid format. Use: DEMOTE +1234567890 [AdminName]\n\n💡 This will:\n• Remove admin privileges from member\n• Convert to regular congregation member\n• Retain membership but remove admin access";
+        }
+
+        const [command, phoneNumber, ...nameParts] = parts;
+        const adminName = nameParts.join(' ').trim();
+
+        if (command.toUpperCase() !== 'DEMOTE') {
+            return "❌ Command not recognized. Use: DEMOTE +1234567890 [AdminName]";
+        }
+
+        // Clean and validate phone number
+        const cleanPhone = this.cleanPhoneNumber(phoneNumber);
+        if (!cleanPhone) {
+            return `❌ Invalid phone number format: ${phoneNumber}.\n💡 Use format: +1234567890`;
+        }
+
+        // Prevent admin from demoting themselves
+        if (cleanPhone === this.cleanPhoneNumber(adminPhone)) {
+            return "❌ You cannot demote yourself.\n\n💡 Contact another admin to remove your admin privileges.";
+        }
+
+        // Check if person exists and is an admin
+        const targetMember = await this.getMemberInfo(cleanPhone);
+        
+        if (!targetMember) {
+            return `❌ No member found with phone number: ${cleanPhone}\n\n💡 Check the phone number and try again.`;
+        }
+
+        if (!targetMember.isAdmin) {
+            const groupNames = targetMember.groups?.map(g => g.name).join(", ") || "no groups";
+            return `❌ ${targetMember.name} is not an administrator!\n\n📊 Current Status:\n👤 Name: ${targetMember.name}\n📱 Phone: ${cleanPhone}\n🔑 Admin: No\n🏛️ Groups: ${groupNames}\n\n💡 Only administrators can be demoted.`;
+        }
+
+        // Name verification if provided
+        if (adminName && targetMember.name.toLowerCase() !== adminName.toLowerCase()) {
+            return `❌ Name verification failed!\n📱 Phone: ${cleanPhone}\n💾 Found admin: ${targetMember.name}\n✏️ Your input: ${adminName}\n\n💡 Use exact name or phone-only for demoting.`;
+        }
+
+        try {
+            // Remove admin privileges (convert to regular member)
+            await Member.findByIdAndUpdate(
+                targetMember.id,
+                { 
+                    isAdmin: false,
+                    lastActivity: new Date()
+                },
+                { new: true }
+            );
+
+            // ✨ Send demotion notification SMS
+            const demotionMessage = await this.sendAdminDemotionSMS(cleanPhone, targetMember.name, admin.name);
+
+            // Log the demotion for audit trail
+            await this.dbManager.recordAnalytic('admin_demoted', 1, 
+                `Demoted by: ${admin.name}, Former Admin: ${targetMember.name} (${cleanPhone}), Demotion SMS: ${demotionMessage.success ? 'Sent' : 'Failed'}`);
+
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('admin_demotion', durationMs, true);
+
+            logger.info(`✅ Admin ${admin.name} demoted ${targetMember.name} (${cleanPhone}) from administrator`);
+
+            // Get updated member counts
+            const totalMembers = await this.dbManager.getAllActiveMembers();
+            const adminCount = totalMembers.filter(m => m.isAdmin).length;
+
+            let successMessage = `🔻 ADMIN DEMOTION SUCCESSFUL!\n\n`;
+            successMessage += `👤 Name: ${targetMember.name}\n`;
+            successMessage += `📱 Phone: ${cleanPhone}\n`;
+            successMessage += `🔑 Status: Regular Member (DEMOTED)\n`;
+            successMessage += `🏛️ Groups: Retained existing groups\n`;
+            successMessage += `📊 Total admins: ${adminCount}\n`;
+            successMessage += `📊 Total members: ${totalMembers.length}\n\n`;
+            successMessage += `❌ ADMIN PRIVILEGES REMOVED:\n`;
+            successMessage += `• No longer can ADD members\n`;
+            successMessage += `• No longer can REMOVE members\n`;
+            successMessage += `• No longer can ADMIN/DEMOTE\n`;
+            successMessage += `• No longer can WIPE database\n`;
+            successMessage += `• No longer can CLEANUP operations\n`;
+            successMessage += `• No admin endpoint access\n\n`;
+            successMessage += `✅ Still active congregation member\n`;
+
+            // Add demotion SMS status
+            if (demotionMessage.success) {
+                successMessage += `📩 Demotion notification SMS sent successfully`;
+                logger.info(`📩 Demotion SMS delivered to ${targetMember.name} (${cleanPhone}): ${demotionMessage.sid}`);
+            } else {
+                successMessage += `⚠️ Demotion notification SMS failed: ${demotionMessage.error}`;
+                logger.warn(`📩 Demotion SMS failed to ${targetMember.name} (${cleanPhone}): ${demotionMessage.error}`);
+            }
+
+            return successMessage;
+
+        } catch (demotionError) {
+            logger.error(`❌ Failed to demote admin: ${demotionError.message}`);
+            return `❌ Failed to demote ${targetMember.name} from administrator.\n\n💡 Error: ${demotionError.message}`;
+        }
+
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('demote_command', durationMs, false, error.message);
+        
+        logger.error(`❌ DEMOTE command error: ${error.message}`);
+        logger.error(`❌ Stack trace: ${error.stack}`);
+        
+        return "❌ System error occurred while demoting administrator.\n\n💡 Tech team has been notified.";
+    }
+}
+
+// ✨ NEW METHOD: Send admin demotion notification SMS
+async sendAdminDemotionSMS(memberPhone, memberName, demotingAdminName) {
+    const startTime = Date.now();
+    logger.info(`📩 Sending admin demotion SMS to: ${memberName} (${memberPhone})`);
+
+    try {
+        // Create a professional demotion notification message
+        const demotionMessage = this.createAdminDemotionMessage(memberName, demotingAdminName);
+        
+        // Send the demotion SMS
+        const result = await this.sendSMS(memberPhone, demotionMessage, 2);
+        
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('admin_demotion_sms', durationMs, result.success);
+
+        if (result.success) {
+            await this.dbManager.recordAnalytic('admin_demotion_sms_sent', 1, 
+                `Former Admin: ${memberName} (${memberPhone}), Demoted by: ${demotingAdminName}`);
+            
+            logger.info(`✅ Admin demotion SMS sent to ${memberName}: ${result.sid}`);
+            return {
+                success: true,
+                sid: result.sid,
+                message: "Admin demotion SMS sent successfully"
+            };
+        } else {
+            await this.dbManager.recordAnalytic('admin_demotion_sms_failed', 1, 
+                `Former Admin: ${memberName} (${memberPhone}), Error: ${result.error}`);
+            
+            logger.error(`❌ Admin demotion SMS failed to ${memberName}: ${result.error}`);
+            return {
+                success: false,
+                error: result.error,
+                message: "Admin demotion SMS delivery failed"
+            };
+        }
+
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('admin_demotion_sms', durationMs, false, error.message);
+        
+        logger.error(`❌ Admin demotion SMS system error for ${memberName}: ${error.message}`);
+        return {
+            success: false,
+            error: error.message,
+            message: "Admin demotion SMS system error"
+        };
+    }
+}
+
+// ✨ NEW METHOD: Create admin demotion message
+createAdminDemotionMessage(memberName, demotingAdminName) {
+    const demotionMessage = `🔻 ADMIN PRIVILEGES REMOVED
+
+${memberName}, your administrator privileges have been removed by ${demotingAdminName}.
+
+📊 YOUR NEW STATUS:
+• Regular Congregation Member
+• Retained church membership
+• No administrative access
+
+❌ REMOVED PRIVILEGES:
+• Cannot ADD new members
+• Cannot REMOVE members
+• Cannot grant ADMIN privileges
+• Cannot WIPE database
+• Cannot use CLEANUP commands
+• No admin endpoint access
+
+✅ YOU CAN STILL:
+• Send messages to congregation
+• Share photos and media
+• Participate in church communication
+• Receive all broadcasts
+
+📱 QUESTIONS?
+Contact ${demotingAdminName} or church leadership for clarification.
+
+You remain a valued member of our church family.
+
+- YesuWay Church Leadership`;
+
+    return demotionMessage;
+}
+
+
 // Add these methods to your ProductionChurchSMS class in app.js
 // Place them after the existing handleCleanupCommand method
 
@@ -2243,7 +2456,8 @@ Welcome to the admin team!
 }
 
 
-// ✨ ALTERNATIVE: Ultra-short admin messages if still too long
+
+
 
 // Ultra-short promotion message (around 500 characters)
 createShortAdminPromotionMessage(adminName, promoterName) {
@@ -2531,6 +2745,11 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
         // Check for ADMIN command (admin only) - PRIVILEGE MANAGEMENT
         if (messageBody.toUpperCase().startsWith('ADMIN ')) {
             return await this.handleAdminCommand(fromPhone, messageBody);
+        }
+
+        // Check for DEMOTE command (admin only) - REMOVE ADMIN PRIVILEGES
+        if (messageBody.toUpperCase().startsWith('DEMOTE ')) {
+            return await this.handleDemoteCommand(fromPhone, messageBody);
         }
 
         // Check for CLEANUP command (admin only)
