@@ -2181,121 +2181,113 @@ async sendAdminWelcomeSMS(adminPhone, adminName, creatorName) {
 
 
 
-// ✨ NEW METHOD: Create admin promotion message
+// 🔧 IMMEDIATE FIX: Replace these two methods in your app.js file
+// Find these methods in your ProductionChurchSMS class and replace them
+
+// Method 1: Replace createAdminPromotionMessage
 createAdminPromotionMessage(adminName, promoterName) {
-    const promotionMessage = `🔑 ADMINISTRATOR PRIVILEGES GRANTED
+    const promotionMessage = `🔑 ADMIN PRIVILEGES GRANTED
 
-Congratulations ${adminName}!
+${adminName}, you've been promoted to Church Administrator by ${promoterName}.
 
-You have been promoted to Church Administrator by ${promoterName}.
+🔑 YOUR ADMIN COMMANDS:
+• ADD +1234567890 Name (add members)
+• REMOVE +1234567890 Name (remove members)  
+• ADMIN +1234567890 Name (grant admin)
+• WIPE CONFIRM (emergency reset)
+• CLEANUP STATUS (system health)
 
-🔑 YOUR NEW ADMIN PRIVILEGES:
-═══════════════════════════════════
+⚠️ RESPONSIBILITIES:
+• All commands are logged
+• Coordinate with other admins
+• Use WIPE only in emergencies
 
-✅ ADD +1234567890 MemberName
-   └─ Add new congregation members
+Send "HELP" for full command list.
 
-✅ REMOVE +1234567890 MemberName  
-   └─ Remove members from system
-
-✅ ADMIN +1234567890 AdminName
-   └─ Grant admin privileges to others
-
-✅ WIPE CONFIRM
-   └─ Emergency complete database wipe
-
-✅ CLEANUP STATUS/DUPLICATES/ORPHANED
-   └─ Database maintenance operations
-
-✅ Administrative dashboard access
-✅ System analytics and monitoring
-✅ All congregation management tools
-
-⚠️ IMPORTANT RESPONSIBILITIES:
-═══════════════════════════════════
-• Admin commands are permanently logged
-• Use WIPE command only in emergencies
-• Coordinate with other admins on major changes
-• Ensure congregation data privacy and security
-
-📱 GETTING STARTED:
-Send "HELP" to see all available commands
-Send "CLEANUP STATUS" to check system health
-
-🏛️ WELCOME TO THE ADMINISTRATIVE TEAM!
-
-Your admin privileges are now active. Use them wisely to serve our church community.
-
-- YesuWay Church Leadership Team`;
+Welcome to the admin team!
+- YesuWay Church Leadership`;
 
     return promotionMessage;
 }
 
-
-
-// ✨ NEW METHOD: Create admin welcome message for new admins
+// Method 2: Replace createAdminWelcomeMessage  
 createAdminWelcomeMessage(adminName, creatorName) {
-    const welcomeMessage = `🏛️ WELCOME TO YESUWAY CHURCH ADMINISTRATION
+    const welcomeMessage = `🏛️ YESUWAY CHURCH ADMIN
 
 Welcome ${adminName}!
 
-${creatorName} has added you as a Church Administrator with full system privileges.
+${creatorName} added you as Church Administrator.
 
-🔑 YOUR ADMINISTRATOR ACCOUNT:
-═══════════════════════════════════
-✅ Full church communication system access
-✅ Complete congregation management tools
-✅ Advanced database administration
-✅ Emergency system controls
-✅ Analytics and monitoring dashboard
+🔑 ADMIN COMMANDS:
+• ADD +1234567890 Name (add members)
+• REMOVE +1234567890 Name (remove members)
+• ADMIN +1234567890 Name (grant admin privileges)
+• WIPE CONFIRM (emergency database reset)
+• CLEANUP STATUS (check system health)
 
-📱 ESSENTIAL ADMIN COMMANDS:
-═══════════════════════════════════
+⚠️ ADMIN RESPONSIBILITIES:
+• Protect member privacy
+• All actions are logged
+• Coordinate with other admins
+• WIPE destroys ALL data permanently
 
-🔧 MEMBER MANAGEMENT:
-• ADD +1234567890 MemberName
-  └─ Add new members with welcome SMS
+📱 GETTING STARTED:
+1. Send "HELP" for full commands
+2. Send "CLEANUP STATUS" for system check
+3. Contact ${creatorName} with questions
 
-• REMOVE +1234567890 MemberName
-  └─ Permanently remove members
-
-👑 ADMIN MANAGEMENT:
-• ADMIN +1234567890 AdminName
-  └─ Grant admin privileges to trusted members
-
-🗄️ DATABASE OPERATIONS:
-• CLEANUP STATUS - Check system health
-• CLEANUP DUPLICATES - Remove duplicates
-• WIPE CONFIRM - Emergency complete reset
-
-📊 SYSTEM MONITORING:
-• Visit /health endpoint for system status
-• Use /analytics for detailed metrics
-• Monitor congregation engagement
-
-⚠️ CRITICAL ADMIN RESPONSIBILITIES:
-═══════════════════════════════════
-🛡️ Protect congregation member privacy
-🔐 Secure admin credentials and access
-📝 All admin actions are permanently logged
-⚠️ WIPE command destroys ALL data permanently
-🤝 Coordinate with other administrators
-
-🎯 GETTING STARTED:
-═══════════════════════════════════
-1. Send "HELP" to see all commands
-2. Send "CLEANUP STATUS" to check database
-3. Review current congregation with "CLEANUP STATUS"
-4. Contact ${creatorName} for any questions
-
-🙏 SERVING THE CHURCH:
-"As each has received a gift, use it to serve one another, as good stewards of God's varied grace." - 1 Peter 4:10
-
-Welcome to the YesuWay Church administrative team!
-
-- Church Leadership Team`;
+Welcome to the admin team!
+- YesuWay Church Leadership`;
 
     return welcomeMessage;
+}
+
+
+// ✨ ALTERNATIVE: Ultra-short admin messages if still too long
+
+// Ultra-short promotion message (around 500 characters)
+createShortAdminPromotionMessage(adminName, promoterName) {
+    return `🔑 ADMIN PROMOTION
+
+${adminName}, you're now a Church Administrator!
+
+Promoted by: ${promoterName}
+
+🔑 YOUR COMMANDS:
+• ADD +1234567890 Name
+• REMOVE +1234567890 Name  
+• ADMIN +1234567890 Name
+• WIPE CONFIRM
+• CLEANUP STATUS
+
+Send "HELP" for details.
+
+Welcome to the admin team!
+- YesuWay Church`;
+}
+
+// Ultra-short welcome message (around 600 characters)
+createShortAdminWelcomeMessage(adminName, creatorName) {
+    return `🏛️ YESUWAY CHURCH ADMIN
+
+Welcome ${adminName}!
+
+Added by: ${creatorName}
+
+🔑 ADMIN COMMANDS:
+• ADD +1234567890 Name
+• REMOVE +1234567890 Name
+• ADMIN +1234567890 Name
+• WIPE CONFIRM (⚠️ DANGER)
+• CLEANUP STATUS
+
+⚠️ All actions logged
+⚠️ WIPE destroys ALL data
+
+Send "HELP" for full guide.
+
+Welcome to leadership!
+- YesuWay Church`;
 }
 
 async getCleanupStatus() {
