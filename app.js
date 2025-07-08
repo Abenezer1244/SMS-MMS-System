@@ -1900,10 +1900,10 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
         // Check for HELP command
         if (messageBody.toUpperCase() === 'HELP') {
             let helpMessage = "📋 YESUWAY CHURCH SMS SYSTEM\n\n" +
-                            "✅ Send messages to entire congregation\n" +
-                            "✅ Share photos/videos (unlimited size)\n" +
-                            "✅ Clean media links (no technical details)\n" +
-                            "✅ Full quality preserved automatically\n\n" +
+                            "✅ CLEANUP STATUS - Show database health status\n" +
+                            "✅ CLEANUP DUPLICATES - Remove duplicate phone numbers\n" +
+                            "✅ CLEANUP PHONE +1234567890 - Remove all data for phone number\n" +
+                            "✅ CLEANUP ORPHANED - Remove inactive members & orphaned data\n\n" +
                             "📱 Text HELP for this message\n" +
                             "🏛️ Production system - serving 24/7\n" +
                             "🗄️ Powered by MongoDB for scalable performance";
