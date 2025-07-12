@@ -17,6 +17,8 @@ const morgan = require('morgan');
 
 // MongoDB imports
 const MongoDBManager = require('./database');
+// UPDATE this import line
+// UPDATE this import line
 const {
     Group,
     Member,
@@ -24,7 +26,8 @@ const {
     MediaFile,
     DeliveryLog,
     SystemAnalytics,
-    PerformanceMetrics
+    PerformanceMetrics,
+    QualityUpgradeSession
 } = require('./models');
 
 // Production logging configuration
@@ -96,6 +99,7 @@ logger.info(`   MongoDB Configured: ${config.mongodb.uri !== undefined || config
 
 // Initialize Express app with production middleware
 const app = express();
+const multer = require('multer');
 
 // Security and performance middleware
 app.use(helmet({
@@ -105,6 +109,62 @@ app.use(compression());
 app.use(cors());
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
+
+
+// Configure multer for HD uploads
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 100 * 1024 * 1024, // 100MB limit
+        files: 10 // Maximum 10 files
+    },
+    fileFilter: (req, file, cb) => {
+        // Accept images, videos, and audio
+        const allowedTypes = /jpeg|jpg|png|gif|mp4|mov|avi|mp3|wav|m4a|webm|quicktime/;
+        const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+        const mimetype = allowedTypes.test(file.mimetype);
+        
+        if (mimetype && extname) {
+            return cb(null, true);
+        } else {
+            cb(new Error('Invalid file type. Only images, videos, and audio files are allowed.'));
+        }
+    }
+}).array('media', 10);
+
+// Custom upload handler with error handling
+const handleFileUpload = (req, res, next) => {
+    upload(req, res, (err) => {
+        if (err instanceof multer.MulterError) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(400).json({
+                    success: false,
+                    error: 'File too large. Maximum size is 100MB per file.'
+                });
+            }
+            if (err.code === 'LIMIT_FILE_COUNT') {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Too many files. Maximum is 10 files per upload.'
+                });
+            }
+            return res.status(400).json({
+                success: false,
+                error: `Upload error: ${err.message}`
+            });
+        } else if (err) {
+            return res.status(400).json({
+                success: false,
+                error: err.message
+            });
+        }
+        next();
+    });
+};
+
+// Apply upload middleware to quality upload route
+app.use('/quality/:token/upload', handleFileUpload);
+
 
 // Rate limiting
 const limiter = rateLimit({
@@ -981,6 +1041,242 @@ async processMediaFiles(messageId, mediaUrls) {
 }
 
 
+// INDUSTRY QUALITY DETECTION SYSTEM - ADD AFTER processMediaFiles method
+    async analyzeMediaQuality(mediaUrls, messageBody) {
+        const startTime = Date.now();
+        
+        try {
+            // Production quality triggers
+            const qualityKeywords = [
+                'hd', 'high quality', 'best quality', 'clear video', 'quality',
+                'important video', 'sermon', 'testimony', 'wedding', 'baptism',
+                'church event', 'special', 'recording', 'broadcast', 'live',
+                'crystal clear', 'professional', 'original quality'
+            ];
+            
+            const hasQualityKeyword = qualityKeywords.some(keyword => 
+                messageBody.toLowerCase().includes(keyword)
+            );
+            
+            // Analyze media characteristics
+            let hasLargeMedia = false;
+            let totalMediaSize = 0;
+            
+            if (mediaUrls && mediaUrls.length > 0) {
+                for (const media of mediaUrls) {
+                    // Download headers to check size without full download
+                    try {
+                        const headResponse = await axios.head(media.url, {
+                            auth: {
+                                username: config.twilio.accountSid,
+                                password: config.twilio.authToken
+                            },
+                            timeout: 5000
+                        });
+                        
+                        const contentLength = parseInt(headResponse.headers['content-length'] || 0);
+                        totalMediaSize += contentLength;
+                        
+                        // Consider large if > 5MB or video content
+                        if (contentLength > 5 * 1024 * 1024 || 
+                            media.type?.includes('video') ||
+                            headResponse.headers['content-type']?.includes('video')) {
+                            hasLargeMedia = true;
+                        }
+                    } catch (headError) {
+                        logger.warn(`⚠️ Could not analyze media size: ${headError.message}`);
+                        // Default to quality upgrade if we can't determine size
+                        hasLargeMedia = true;
+                    }
+                }
+            }
+            
+            const shouldUpgrade = hasQualityKeyword || hasLargeMedia || totalMediaSize > 10 * 1024 * 1024;
+            
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('quality_analysis', durationMs, true);
+            
+            logger.info(`🔍 Quality analysis: Keywords=${hasQualityKeyword}, Large=${hasLargeMedia}, Size=${(totalMediaSize/1024/1024).toFixed(2)}MB, Upgrade=${shouldUpgrade}`);
+            
+            return {
+                shouldUpgrade,
+                hasQualityKeyword,
+                hasLargeMedia,
+                totalMediaSize,
+                mediaCount: mediaUrls?.length || 0
+            };
+            
+        } catch (error) {
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('quality_analysis', durationMs, false, error.message);
+            
+            logger.error(`❌ Quality analysis error: ${error.message}`);
+            return {
+                shouldUpgrade: false,
+                hasQualityKeyword: false,
+                hasLargeMedia: false,
+                totalMediaSize: 0,
+                mediaCount: 0
+            };
+        }
+    }
+
+    async generateQualityUpgradeToken() {
+        const crypto = require('crypto');
+        return crypto.randomBytes(20).toString('hex');
+    }
+
+    async createQualityUpgradeSession(fromPhone, fromName, originalMessageId, mediaUrls, analysisResult) {
+        const startTime = Date.now();
+        
+        try {
+            const token = await this.generateQualityUpgradeToken();
+            const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+            
+            const sessionData = {
+                token,
+                fromPhone,
+                fromName,
+                originalMessageId,
+                originalMediaUrls: mediaUrls.map(media => ({
+                    url: media.url,
+                    type: media.type,
+                    size: analysisResult.totalMediaSize
+                })),
+                expiresAt,
+                status: 'pending'
+            };
+            
+            const session = await this.dbManager.createQualityUpgradeSession(sessionData);
+            
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('upgrade_session_creation', durationMs, true);
+            
+            logger.info(`✅ Created quality upgrade session: ${token} for ${fromName}`);
+            
+            return {
+                token,
+                upgradeUrl: `${this.getBaseUrl()}/quality/${token}`,
+                expiresAt
+            };
+            
+        } catch (error) {
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('upgrade_session_creation', durationMs, false, error.message);
+            
+            logger.error(`❌ Failed to create upgrade session: ${error.message}`);
+            throw error;
+        }
+    }
+
+    getBaseUrl() {
+        // Production URL detection
+        if (process.env.RENDER_EXTERNAL_URL) {
+            return process.env.RENDER_EXTERNAL_URL;
+        }
+        if (process.env.PRODUCTION_URL) {
+            return process.env.PRODUCTION_URL;
+        }
+        // Fallback for development
+        return `http://localhost:${config.port}`;
+    }
+
+    async handleDualTrackMedia(fromPhone, messageBody, mediaUrls, member) {
+        const startTime = Date.now();
+        
+        try {
+            logger.info(`🎬 Processing dual-track media for ${member.name}`);
+            
+            // 1. IMMEDIATE BROADCAST (no delays)
+            const broadcastPromise = this.broadcastMessage(fromPhone, messageBody, mediaUrls);
+            
+            // 2. QUALITY ANALYSIS (parallel)
+            const analysisPromise = this.analyzeMediaQuality(mediaUrls, messageBody);
+            
+            // Wait for both
+            const [broadcastResult, analysisResult] = await Promise.all([
+                broadcastPromise,
+                analysisPromise
+            ]);
+            
+            // 3. CREATE UPGRADE SESSION if quality upgrade is beneficial
+            if (analysisResult.shouldUpgrade) {
+                try {
+                    // Find the message ID from broadcast result
+                    const messageId = broadcastResult?.messageId || null;
+                    
+                    const upgradeSession = await this.createQualityUpgradeSession(
+                        fromPhone, member.name, messageId, mediaUrls, analysisResult
+                    );
+                    
+                    // 4. SEND UPGRADE OFFER (only to sender)
+                    const upgradeMessage = this.formatQualityUpgradeMessage(
+                        upgradeSession, analysisResult
+                    );
+                    
+                    // Send upgrade offer asynchronously
+                    const upgradePromise = this.sendSMS(fromPhone, upgradeMessage);
+                    
+                    // Log analytics
+                    await this.dbManager.recordAnalytic('quality_upgrade_offered', 1,
+                        `User: ${member.name}, MediaCount: ${mediaUrls.length}, Size: ${(analysisResult.totalMediaSize/1024/1024).toFixed(2)}MB`);
+                    
+                    // Don't wait for upgrade SMS to complete
+                    upgradePromise.catch(error => {
+                        logger.error(`❌ Failed to send upgrade offer: ${error.message}`);
+                    });
+                    
+                    logger.info(`✅ Dual-track complete: Broadcast delivered + upgrade offered`);
+                } catch (upgradeError) {
+                    logger.error(`❌ Upgrade session creation failed: ${upgradeError.message}`);
+                    // Continue anyway - broadcast was successful
+                }
+            } else {
+                logger.info(`ℹ️ Quality upgrade not beneficial for this media`);
+            }
+            
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('dual_track_processing', durationMs, true);
+            
+            return broadcastResult;
+            
+        } catch (error) {
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('dual_track_processing', durationMs, false, error.message);
+            
+            logger.error(`❌ Dual-track processing failed: ${error.message}`);
+            
+            // Fallback to standard broadcast
+            return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
+        }
+    }
+
+    formatQualityUpgradeMessage(upgradeSession, analysisResult) {
+        const sizeMB = (analysisResult.totalMediaSize / 1024 / 1024).toFixed(1);
+        const expirationTime = upgradeSession.expiresAt.toLocaleTimeString('en-US', {
+            hour: 'numeric',
+            minute: '2-digit'
+        });
+        
+        let upgradeMessage = `📱 QUALITY UPGRADE AVAILABLE\n\n`;
+        upgradeMessage += `✅ Your message was broadcast successfully!\n\n`;
+        
+        if (analysisResult.hasQualityKeyword) {
+            upgradeMessage += `🎥 Quality keyword detected\n`;
+        }
+        if (analysisResult.hasLargeMedia) {
+            upgradeMessage += `📊 Large media detected (${sizeMB}MB)\n`;
+        }
+        
+        upgradeMessage += `\n📹 Upload HD version:\n`;
+        upgradeMessage += `${upgradeSession.upgradeUrl}\n\n`;
+        upgradeMessage += `⏰ Available until ${expirationTime}\n`;
+        upgradeMessage += `🔄 HD version will auto-replace current`;
+        
+        return upgradeMessage;
+    }
+
+
 // 4. ADD this method to enhance your message formatting with stream indicators
 formatMessageWithMedia(originalMessage, sender, mediaLinks = null) {
     if (mediaLinks && mediaLinks.length > 0) {
@@ -998,7 +1294,97 @@ formatMessageWithMedia(originalMessage, sender, mediaLinks = null) {
     }
 }
 
+// HD BROADCAST SYSTEM - ADD AFTER handleDualTrackMedia method
+    async broadcastHDUpgrade(session, processedMedia) {
+        const startTime = Date.now();
+        
+        try {
+            logger.info(`📡 Broadcasting HD upgrade for ${session.fromName}: ${processedMedia.length} files`);
+            
+            // Get all active members except the sender
+            const recipients = await this.getAllActiveMembers(session.fromPhone);
+            
+            if (recipients.length === 0) {
+                logger.warn('❌ No active recipients for HD broadcast');
+                return { success: false, error: 'No active recipients' };
+            }
+            
+            // Format HD upgrade message
+            const hdMessage = this.formatHDUpgradeMessage(session.fromName, processedMedia);
+            
+            // Broadcast to all recipients
+            const deliveryStats = {
+                sent: 0,
+                failed: 0,
+                errors: []
+            };
+            
+            const sendPromises = recipients.map(async (member) => {
+                try {
+                    const result = await this.sendSMS(member.phone, hdMessage);
+                    
+                    if (result.success) {
+                        deliveryStats.sent++;
+                        logger.info(`✅ HD broadcast delivered to ${member.name}: ${result.sid}`);
+                    } else {
+                        deliveryStats.failed++;
+                        deliveryStats.errors.push(`${member.name}: ${result.error}`);
+                    }
+                } catch (error) {
+                    deliveryStats.failed++;
+                    deliveryStats.errors.push(`${member.name}: ${error.message}`);
+                }
+            });
+            
+            await Promise.allSettled(sendPromises);
+            
+            // Send confirmation to original sender
+            const confirmationMessage = `✅ HD UPGRADE COMPLETE\n\n` +
+                `📹 ${processedMedia.length} HD file(s) broadcast\n` +
+                `📊 Delivered to ${deliveryStats.sent}/${recipients.length} members\n` +
+                `🎥 Original quality preserved\n\n` +
+                `Your congregation now has the HD version!`;
+            
+            await this.sendSMS(session.fromPhone, confirmationMessage);
+            
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('hd_broadcast', durationMs, true);
+            
+            logger.info(`✅ HD broadcast completed: ${deliveryStats.sent} sent, ${deliveryStats.failed} failed`);
+            
+            return {
+                success: true,
+                delivered: deliveryStats.sent,
+                failed: deliveryStats.failed,
+                totalRecipients: recipients.length,
+                processingTime: durationMs
+            };
+            
+        } catch (error) {
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('hd_broadcast', durationMs, false, error.message);
+            
+            logger.error(`❌ HD broadcast failed: ${error.message}`);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    }
 
+    formatHDUpgradeMessage(senderName, processedMedia) {
+        let message = `🔄 HD QUALITY UPDATE\n\n`;
+        message += `💬 ${senderName} uploaded HD version:\n\n`;
+        
+        processedMedia.forEach((media, index) => {
+            message += `🎥 ${media.displayName}: ${media.url}\n`;
+        });
+        
+        message += `\n✨ Original quality preserved\n`;
+        message += `📱 Tap links for best viewing experience`;
+        
+        return message;
+    }
 
 
 // 5. ADD this method to check Cloudflare Stream configuration
@@ -3539,87 +3925,116 @@ async cleanupOrphanedData() {
 // Replace your existing handleIncomingMessage method in app.js with this version
 
 async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
-    logger.info(`📨 Incoming message from ${fromPhone}`);
+        logger.info(`📨 Incoming message from ${fromPhone}`);
 
-    try {
-        fromPhone = this.cleanPhoneNumber(fromPhone);
-        
-        messageBody = messageBody ? messageBody.trim() : "";
-        
-        if (!messageBody && mediaUrls && mediaUrls.length > 0) {
-            messageBody = `[Media content - ${mediaUrls.length} file(s)]`;
-        }
-        
-        if (!messageBody) {
-            messageBody = "[Empty message]";
-        }
-
-        if (mediaUrls && mediaUrls.length > 0) {
-            logger.info(`📎 Received ${mediaUrls.length} media files`);
-            for (let i = 0; i < mediaUrls.length; i++) {
-                const media = mediaUrls[i];
-                logger.info(`   Media ${i + 1}: ${media.type || 'unknown'} - ${media.url || 'no URL'}`);
+        try {
+            fromPhone = this.cleanPhoneNumber(fromPhone);
+            
+            messageBody = messageBody ? messageBody.trim() : "";
+            
+            if (!messageBody && mediaUrls && mediaUrls.length > 0) {
+                messageBody = `[Media content - ${mediaUrls.length} file(s)]`;
             }
+            
+            if (!messageBody) {
+                messageBody = "[Empty message]";
+            }
+
+            if (mediaUrls && mediaUrls.length > 0) {
+                logger.info(`📎 Received ${mediaUrls.length} media files`);
+                for (let i = 0; i < mediaUrls.length; i++) {
+                    const media = mediaUrls[i];
+                    logger.info(`   Media ${i + 1}: ${media.type || 'unknown'} - ${media.url || 'no URL'}`);
+                }
+            }
+
+            const member = await this.getMemberInfo(fromPhone);
+
+            if (!member) {
+                logger.warn(`❌ Rejected message from unregistered number: ${fromPhone}`);
+                await this.sendSMS(
+                    fromPhone,
+                    "You are not registered in the church SMS system. Please contact a church administrator to be added."
+                );
+                return null;
+            }
+
+            logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
+
+            // Check for HELP command
+            if (messageBody.toUpperCase() === 'HELP') {
+                return await this.generateHelpMessage(member);
+            }
+
+            // Check for ADD command (admin only)
+            if (messageBody.toUpperCase().startsWith('ADD ')) {
+                return await this.handleAddMemberCommand(fromPhone, messageBody);
+            }
+
+            // Check for REMOVE command (admin only)
+            if (messageBody.toUpperCase().startsWith('REMOVE ')) {
+                return await this.handleRemoveMemberCommand(fromPhone, messageBody);
+            }
+
+            // Check for WIPE command (admin only) - DANGEROUS OPERATION
+            if (messageBody.toUpperCase().startsWith('WIPE ') || messageBody.toUpperCase() === 'WIPE') {
+                return await this.handleWipeCommand(fromPhone, messageBody);
+            }
+
+            // Check for ADMIN command (admin only) - PRIVILEGE MANAGEMENT
+            if (messageBody.toUpperCase().startsWith('ADMIN ')) {
+                return await this.handleAdminCommand(fromPhone, messageBody);
+            }
+
+            // Check for DEMOTE command (admin only) - REMOVE ADMIN PRIVILEGES
+            if (messageBody.toUpperCase().startsWith('DEMOTE ')) {
+                return await this.handleDemoteCommand(fromPhone, messageBody);
+            }
+
+            // Check for CLEANUP command (admin only)
+            if (messageBody.toUpperCase().startsWith('CLEANUP ') || messageBody.toUpperCase() === 'CLEANUP') {
+                return await this.handleCleanupCommand(fromPhone, messageBody);
+            }
+
+            // QUALITY PROCESSING LOGIC
+            if (mediaUrls && mediaUrls.length > 0) {
+                logger.info('🎬 Analyzing media for quality upgrade opportunity...');
+                
+                // Quick quality check (don't delay broadcast)
+                const hasQualityIndicators = this.hasQualityIndicators(messageBody, mediaUrls);
+                
+                if (hasQualityIndicators) {
+                    logger.info('🔍 Quality indicators detected - using dual-track processing');
+                    return await this.handleDualTrackMedia(fromPhone, messageBody, mediaUrls, member);
+                }
+            }
+
+            // Regular message broadcasting
+            logger.info('📡 Processing standard message broadcast...');
+            return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
+            
+        } catch (error) {
+            logger.error(`❌ Message processing error: ${error.message}`);
+            logger.error(`❌ Stack trace: ${error.stack}`);
+            return "Message processing temporarily unavailable - please try again";
         }
-
-        const member = await this.getMemberInfo(fromPhone);
-
-        if (!member) {
-            logger.warn(`❌ Rejected message from unregistered number: ${fromPhone}`);
-            await this.sendSMS(
-                fromPhone,
-                "You are not registered in the church SMS system. Please contact a church administrator to be added."
-            );
-            return null;
-        }
-
-        logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
-
-        // Check for HELP command
-        if (messageBody.toUpperCase() === 'HELP') {
-            return await this.generateHelpMessage(member);
-        }
-
-        // Check for ADD command (admin only)
-        if (messageBody.toUpperCase().startsWith('ADD ')) {
-            return await this.handleAddMemberCommand(fromPhone, messageBody);
-        }
-
-        // Check for REMOVE command (admin only)
-        if (messageBody.toUpperCase().startsWith('REMOVE ')) {
-            return await this.handleRemoveMemberCommand(fromPhone, messageBody);
-        }
-
-        // Check for WIPE command (admin only) - DANGEROUS OPERATION
-        if (messageBody.toUpperCase().startsWith('WIPE ') || messageBody.toUpperCase() === 'WIPE') {
-            return await this.handleWipeCommand(fromPhone, messageBody);
-        }
-
-        // Check for ADMIN command (admin only) - PRIVILEGE MANAGEMENT
-        if (messageBody.toUpperCase().startsWith('ADMIN ')) {
-            return await this.handleAdminCommand(fromPhone, messageBody);
-        }
-
-        // Check for DEMOTE command (admin only) - REMOVE ADMIN PRIVILEGES
-        if (messageBody.toUpperCase().startsWith('DEMOTE ')) {
-            return await this.handleDemoteCommand(fromPhone, messageBody);
-        }
-
-        // Check for CLEANUP command (admin only)
-        if (messageBody.toUpperCase().startsWith('CLEANUP ') || messageBody.toUpperCase() === 'CLEANUP') {
-            return await this.handleCleanupCommand(fromPhone, messageBody);
-        }
-
-        // Regular message broadcasting
-        logger.info('📡 Processing message broadcast...');
-        return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
-        
-    } catch (error) {
-        logger.error(`❌ Message processing error: ${error.message}`);
-        logger.error(`❌ Stack trace: ${error.stack}`);
-        return "Message processing temporarily unavailable - please try again";
     }
-}
+
+    // Quick quality indicator check (no async operations)
+    hasQualityIndicators(messageBody, mediaUrls) {
+        const qualityKeywords = ['hd', 'quality', 'clear', 'important', 'sermon', 'special'];
+        const hasKeywords = qualityKeywords.some(keyword => 
+            messageBody.toLowerCase().includes(keyword)
+        );
+        
+        const hasVideo = mediaUrls.some(media => 
+            media.type && media.type.includes('video')
+        );
+        
+        const hasMultipleMedia = mediaUrls.length > 1;
+        
+        return hasKeywords || hasVideo || hasMultipleMedia;
+    }
 
 
 
@@ -4246,6 +4661,396 @@ app.get('/analytics', async (req, res) => {
             timestamp: new Date().toISOString()
         });
     }
+});
+
+// QUALITY UPGRADE ROUTES - ADD BEFORE error handlers
+
+app.get('/quality/:token', async (req, res) => {
+    try {
+        const token = req.params.token;
+        const session = await smsSystem.dbManager.getQualityUpgradeSession(token);
+        
+        if (!session) {
+            return res.status(404).send(`
+                <!DOCTYPE html>
+                <html><head><title>Upload Expired</title>
+                <meta name="viewport" content="width=device-width,initial-scale=1">
+                <style>body{font-family:Arial;padding:20px;text-align:center;background:#f5f5f5}
+                .container{max-width:400px;margin:0 auto;background:white;padding:30px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}
+                .error{color:#e74c3c}</style></head>
+                <body><div class="container">
+                <h2 class="error">⏰ Upload Link Expired</h2>
+                <p>This quality upgrade link has expired or is invalid.</p>
+                <p>Send a new message to get a fresh upload link.</p>
+                </div></body></html>
+            `);
+        }
+        
+        // Serve upload interface
+        const uploadHTML = `
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>🏛️ YesuWay Church - HD Upload</title>
+                <style>
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    body { 
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        min-height: 100vh; padding: 20px; 
+                    }
+                    .container { 
+                        max-width: 500px; margin: 20px auto; background: white;
+                        border-radius: 15px; overflow: hidden;
+                        box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+                    }
+                    .header { 
+                        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+                        color: white; padding: 30px; text-align: center;
+                    }
+                    .content { padding: 30px; }
+                    .upload-area {
+                        border: 3px dashed #ddd; border-radius: 10px; padding: 40px;
+                        text-align: center; margin: 20px 0; cursor: pointer;
+                        transition: all 0.3s ease;
+                    }
+                    .upload-area:hover { border-color: #4facfe; background: #f8f9fa; }
+                    .upload-area.dragover { border-color: #4facfe; background: #e3f2fd; }
+                    input[type="file"] { display: none; }
+                    .btn {
+                        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+                        color: white; border: none; padding: 15px 30px;
+                        border-radius: 25px; font-size: 16px; font-weight: 600;
+                        cursor: pointer; width: 100%; margin: 10px 0;
+                        transition: transform 0.2s ease;
+                    }
+                    .btn:hover { transform: translateY(-2px); }
+                    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+                    .progress { 
+                        width: 100%; height: 8px; background: #eee;
+                        border-radius: 4px; margin: 20px 0; overflow: hidden;
+                    }
+                    .progress-bar {
+                        height: 100%; background: linear-gradient(90deg, #4facfe, #00f2fe);
+                        width: 0%; transition: width 0.3s ease;
+                    }
+                    .status { 
+                        padding: 15px; border-radius: 8px; margin: 15px 0;
+                        text-align: center; font-weight: 500;
+                    }
+                    .status.success { background: #d4edda; color: #155724; }
+                    .status.error { background: #f8d7da; color: #721c24; }
+                    .status.info { background: #d1ecf1; color: #0c5460; }
+                    .member-info {
+                        background: #f8f9fa; padding: 20px; border-radius: 8px;
+                        margin-bottom: 20px; border-left: 4px solid #4facfe;
+                    }
+                    .file-info {
+                        background: #f8f9fa; padding: 15px; border-radius: 8px;
+                        margin: 10px 0; text-align: left;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h1>🏛️ YesuWay Church</h1>
+                        <p>HD Quality Upload</p>
+                    </div>
+                    
+                    <div class="content">
+                        <div class="member-info">
+                            <strong>📱 From:</strong> ${session.fromName}<br>
+                            <strong>⏰ Expires:</strong> ${session.expiresAt.toLocaleString()}<br>
+                            <strong>📊 Original:</strong> ${session.originalMediaUrls.length} file(s)
+                        </div>
+                        
+                        <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+                            <h3>📁 Select HD Media Files</h3>
+                            <p>Click here or drag files to upload</p>
+                            <p style="color: #666; font-size: 14px; margin-top: 10px;">
+                                Supports: Photos, Videos, Audio<br>
+                                Maximum quality preserved
+                            </p>
+                        </div>
+                        
+                        <input type="file" id="fileInput" multiple accept="image/*,video/*,audio/*">
+                        
+                        <div id="fileList"></div>
+                        <div id="progress" class="progress" style="display: none;">
+                            <div id="progressBar" class="progress-bar"></div>
+                        </div>
+                        <div id="status"></div>
+                        
+                        <button id="uploadBtn" class="btn" style="display: none;">
+                            📤 Upload HD Quality
+                        </button>
+                    </div>
+                </div>
+                
+                <script>
+                    const fileInput = document.getElementById('fileInput');
+                    const uploadArea = document.querySelector('.upload-area');
+                    const fileList = document.getElementById('fileList');
+                    const uploadBtn = document.getElementById('uploadBtn');
+                    const status = document.getElementById('status');
+                    const progress = document.getElementById('progress');
+                    const progressBar = document.getElementById('progressBar');
+                    
+                    let selectedFiles = [];
+                    
+                    // Drag and drop handlers
+                    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                        uploadArea.addEventListener(eventName, preventDefaults, false);
+                    });
+                    
+                    function preventDefaults(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }
+                    
+                    ['dragenter', 'dragover'].forEach(eventName => {
+                        uploadArea.addEventListener(eventName, () => uploadArea.classList.add('dragover'), false);
+                    });
+                    
+                    ['dragleave', 'drop'].forEach(eventName => {
+                        uploadArea.addEventListener(eventName, () => uploadArea.classList.remove('dragover'), false);
+                    });
+                    
+                    uploadArea.addEventListener('drop', handleDrop, false);
+                    
+                    function handleDrop(e) {
+                        const dt = e.dataTransfer;
+                        const files = dt.files;
+                        handleFiles(files);
+                    }
+                    
+                    fileInput.addEventListener('change', (e) => {
+                        handleFiles(e.target.files);
+                    });
+                    
+                    function handleFiles(files) {
+                        selectedFiles = Array.from(files);
+                        displayFiles();
+                        uploadBtn.style.display = selectedFiles.length > 0 ? 'block' : 'none';
+                    }
+                    
+                    function displayFiles() {
+                        fileList.innerHTML = '';
+                        selectedFiles.forEach((file, index) => {
+                            const fileDiv = document.createElement('div');
+                            fileDiv.className = 'file-info';
+                            fileDiv.innerHTML = \`
+                                <strong>\${file.name}</strong><br>
+                                Size: \${(file.size / 1024 / 1024).toFixed(2)} MB<br>
+                                Type: \${file.type}
+                            \`;
+                            fileList.appendChild(fileDiv);
+                        });
+                    }
+                    
+                    uploadBtn.addEventListener('click', async () => {
+                        if (selectedFiles.length === 0) return;
+                        
+                        uploadBtn.disabled = true;
+                        progress.style.display = 'block';
+                        status.innerHTML = '<div class="status info">📤 Uploading HD quality media...</div>';
+                        
+                        const formData = new FormData();
+                        selectedFiles.forEach((file, index) => {
+                            formData.append('media', file);
+                        });
+                        
+                        try {
+                            const response = await fetch('/quality/${token}/upload', {
+                                method: 'POST',
+                                body: formData
+                            });
+                            
+                            const result = await response.json();
+                            
+                            if (result.success) {
+                                progressBar.style.width = '100%';
+                                status.innerHTML = \`
+                                    <div class="status success">
+                                        ✅ HD Upload Successful!<br>
+                                        \${result.processedCount} file(s) processed<br>
+                                        Congregation will receive HD version automatically
+                                    </div>
+                                \`;
+                                uploadBtn.style.display = 'none';
+                                
+                                // Auto-close after 3 seconds
+                                setTimeout(() => {
+                                    window.close();
+                                }, 3000);
+                            } else {
+                                throw new Error(result.error || 'Upload failed');
+                            }
+                        } catch (error) {
+                            status.innerHTML = \`
+                                <div class="status error">
+                                    ❌ Upload Failed<br>
+                                    \${error.message}
+                                </div>
+                            \`;
+                            uploadBtn.disabled = false;
+                            progress.style.display = 'none';
+                        }
+                    });
+                </script>
+            </body>
+            </html>
+        `;
+        
+        res.send(uploadHTML);
+        
+    } catch (error) {
+        logger.error(`❌ Quality upload page error: ${error.message}`);
+        res.status(500).send('Internal server error');
+    }
+});
+
+app.post('/quality/:token/upload', async (req, res) => {
+    try {
+        const token = req.params.token;
+        const session = await smsSystem.dbManager.getQualityUpgradeSession(token);
+        
+        if (!session) {return res.status(404).json({ 
+               success: false, 
+               error: 'Upload session expired or invalid' 
+           });
+       }
+       
+       if (!req.files || req.files.length === 0) {
+           return res.status(400).json({ 
+               success: false, 
+               error: 'No files uploaded' 
+           });
+       }
+       
+       logger.info(`📤 Processing HD upload for session ${token}: ${req.files.length} files`);
+       
+       // Process uploaded files with maximum quality preservation
+       const processedMedia = [];
+       const processingErrors = [];
+       
+       for (let i = 0; i < req.files.length; i++) {
+           const file = req.files[i];
+           
+           try {
+               logger.info(`🔄 Processing HD file ${i + 1}: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+               
+               // Generate clean filename
+               const { cleanFilename, displayName } = smsSystem.generateCleanFilename(file.mimetype, i + 1);
+               
+               // Upload directly to R2 with maximum quality settings
+               const publicUrl = await smsSystem.uploadToR2WithOptimization(
+                   file.buffer,
+                   cleanFilename,
+                   file.mimetype,
+                   {
+                       'original-filename': file.originalname,
+                       'upload-method': 'hd-quality-upgrade',
+                       'session-token': token,
+                       'file-size': file.size.toString(),
+                       'quality-mode': 'maximum',
+                       'compression': 'none'
+                   }
+               );
+               
+               if (publicUrl) {
+                   processedMedia.push({
+                       url: publicUrl,
+                       displayName,
+                       type: file.mimetype,
+                       size: file.size,
+                       r2ObjectKey: cleanFilename
+                   });
+                   
+                   // Store in database
+                   if (smsSystem.dbManager.isConnected) {
+                       await smsSystem.dbManager.createMediaFile({
+                           messageId: session.originalMessageId,
+                           originalUrl: 'hd-upload',
+                           r2ObjectKey: cleanFilename,
+                           publicUrl: publicUrl,
+                           cleanFilename: cleanFilename.split('/').pop(),
+                           displayName: displayName,
+                           originalSize: file.size,
+                           finalSize: file.size,
+                           mimeType: file.mimetype,
+                           fileHash: require('crypto').createHash('sha256').update(file.buffer).digest('hex'),
+                           uploadStatus: 'completed',
+                           qualityInfo: 'hd-original-quality',
+                           streamOptimized: false,
+                           processingMetadata: {
+                               uploadMethod: 'hd-quality-upgrade',
+                               originalFilename: file.originalname,
+                               sessionToken: token,
+                               qualityMode: 'maximum'
+                           }
+                       });
+                   }
+                   
+                   logger.info(`✅ HD file ${i + 1} processed successfully: ${displayName}`);
+               } else {
+                   processingErrors.push(`Failed to upload ${file.originalname}`);
+               }
+               
+           } catch (fileError) {
+               logger.error(`❌ Error processing HD file ${i + 1}: ${fileError.message}`);
+               processingErrors.push(`Error processing ${file.originalname}: ${fileError.message}`);
+           }
+       }
+       
+       if (processedMedia.length === 0) {
+           return res.status(500).json({
+               success: false,
+               error: 'Failed to process any files',
+               details: processingErrors
+           });
+       }
+       
+       // Update session with uploaded media
+       await smsSystem.dbManager.updateQualityUpgradeSession(token, {
+           upgradedMediaUrls: processedMedia,
+           status: 'uploaded'
+       });
+       
+       // Broadcast HD version to congregation
+       const hdBroadcastResult = await smsSystem.broadcastHDUpgrade(session, processedMedia);
+       
+       // Update session status
+       await smsSystem.dbManager.updateQualityUpgradeSession(token, {
+           status: 'broadcast',
+           upgradeCompleted: true
+       });
+       
+       // Log analytics
+       await smsSystem.dbManager.recordAnalytic('hd_upgrade_completed', processedMedia.length,
+           `User: ${session.fromName}, Files: ${processedMedia.length}, Errors: ${processingErrors.length}`);
+       
+       logger.info(`✅ HD upgrade completed for ${session.fromName}: ${processedMedia.length} files broadcast`);
+       
+       res.json({
+           success: true,
+           processedCount: processedMedia.length,
+           errorCount: processingErrors.length,
+           broadcastResult: hdBroadcastResult,
+           message: 'HD quality upload successful - congregation notified'
+       });
+       
+   } catch (error) {
+       logger.error(`❌ HD upload processing error: ${error.message}`);
+       res.status(500).json({
+           success: false,
+           error: 'Upload processing failed',
+           details: error.message
+       });
+   }
 });
 
 // Error handlers
