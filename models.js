@@ -297,70 +297,7 @@ const performanceMetricsSchema = new Schema({
     collection: 'performance_metrics'
 });
 
-// Quality Upgrade Session Schema - ADD AFTER performanceMetricsSchema
-const qualityUpgradeSessionSchema = new Schema({
-    token: {
-        type: String,
-        required: true,
-        unique: true,
-        index: true
-    },
-    fromPhone: {
-        type: String,
-        required: true,
-        index: true
-    },
-    fromName: {
-        type: String,
-        required: true
-    },
-    originalMessageId: {
-        type: Schema.Types.ObjectId,
-        ref: 'BroadcastMessage'
-    },
-    originalMediaUrls: [{
-        url: String,
-        type: String,
-        size: Number
-    }],
-    upgradedMediaUrls: [{
-        url: String,
-        type: String,
-        size: Number,
-        r2ObjectKey: String,
-        publicUrl: String
-    }],
-    status: {
-        type: String,
-        enum: ['pending', 'uploaded', 'processed', 'broadcast', 'expired'],
-        default: 'pending',
-        index: true
-    },
-    accessCount: {
-        type: Number,
-        default: 0
-    },
-    expiresAt: {
-        type: Date,
-        required: true,
-        index: true
-    },
-    lastAccessed: {
-        type: Date
-    },
-    upgradeCompleted: {
-        type: Boolean,
-        default: false
-    }
-}, {
-    timestamps: true,
-    collection: 'quality_upgrade_sessions'
-});
 
-// ADD index for cleanup
-qualityUpgradeSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-
-const QualityUpgradeSession = mongoose.model('QualityUpgradeSession', qualityUpgradeSessionSchema);
 
 // Add indexes for optimized queries
 groupSchema.index({ active: 1, name: 1 });
@@ -389,5 +326,4 @@ module.exports = {
     DeliveryLog,
     SystemAnalytics,
     PerformanceMetrics,
-    QualityUpgradeSession
 };

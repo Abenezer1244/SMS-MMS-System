@@ -486,68 +486,7 @@ async getMemberByPhoneSafe(phoneNumber) {
             throw error;
         }
     }
-    // Quality Upgrade Operations - ADD AFTER performMaintenance method
-    async createQualityUpgradeSession(sessionData) {
-        try {
-            const { QualityUpgradeSession } = require('./models');
-            const session = new QualityUpgradeSession(sessionData);
-            return await session.save();
-        } catch (error) {
-            this.logger.error(`❌ Error creating quality upgrade session: ${error.message}`);
-            throw error;
-        }
-    }
 
-    async getQualityUpgradeSession(token) {
-        try {
-            const { QualityUpgradeSession } = require('./models');
-            return await QualityUpgradeSession.findOne({ 
-                token: token,
-                status: { $in: ['pending', 'uploaded'] },
-                expiresAt: { $gt: new Date() }
-            });
-        } catch (error) {
-            this.logger.error(`❌ Error getting quality upgrade session: ${error.message}`);
-            return null;
-        }
-    }
-
-    async updateQualityUpgradeSession(token, updateData) {
-        try {
-            const { QualityUpgradeSession } = require('./models');
-            return await QualityUpgradeSession.findOneAndUpdate(
-                { token: token },
-                { 
-                    ...updateData,
-                    lastAccessed: new Date(),
-                    $inc: { accessCount: 1 }
-                },
-                { new: true }
-            );
-        } catch (error) {
-            this.logger.error(`❌ Error updating quality upgrade session: ${error.message}`);
-            throw error;
-        }
-    }
-
-    async cleanupExpiredUpgradeSessions() {
-        try {
-            const { QualityUpgradeSession } = require('./models');
-            const expired = await QualityUpgradeSession.deleteMany({
-                expiresAt: { $lt: new Date() }
-            });
-            
-            if (expired.deletedCount > 0) {
-                this.logger.info(`🧹 Cleaned up ${expired.deletedCount} expired upgrade sessions`);
-            }
-            
-            return expired.deletedCount;
-        } catch (error) {
-            this.logger.error(`❌ Error cleaning up expired sessions: ${error.message}`);
-            return 0;
-        }
-    }
-    
     // Transaction Support
     async withTransaction(callback) {
         const session = await mongoose.startSession();
