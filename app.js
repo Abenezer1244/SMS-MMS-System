@@ -131,11 +131,13 @@ class ProductionChurchSMS {
         this.r2Client = null;
         this.dbManager = new MongoDBManager(logger);
         this.performanceMetrics = [];
+        this.reactionSystem = new WhatsAppStyleReactionSystem(this, logger);
         
         this.initializeServices();
         this.initializeDatabase();
         
         logger.info('SUCCESS: Production Church SMS System with MongoDB initialized');
+        logger.info('✅ WhatsApp-style reaction system integrated');
     }
 
     buildMongoConnectionString() {
@@ -300,6 +302,8 @@ class ProductionChurchSMS {
             logger.info('🛠️ DEVELOPMENT MODE: Some services mocked for local development');
         }
     }
+
+    
 
     async initializeDatabase() {
         const maxRetries = 5;
@@ -2775,89 +2779,282 @@ async cleanupOrphanedData() {
 
 
 
-async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
-    logger.info(`📨 Incoming message from ${fromPhone}`);
+// Enhanced handleIncomingMessage method with reaction detection
+    async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
+        logger.info(`📨 Incoming message from ${fromPhone}`);
 
-    try {
-        fromPhone = this.cleanPhoneNumber(fromPhone);
-        
-        messageBody = messageBody ? messageBody.trim() : "";
-        
-        if (!messageBody && mediaUrls && mediaUrls.length > 0) {
-            messageBody = ""; // Empty for media-only messages
-        }
-
-        if (!messageBody && (!mediaUrls || mediaUrls.length === 0)) {
-            messageBody = "[Empty message]";
-        }
-
-        if (mediaUrls && mediaUrls.length > 0) {
-            logger.info(`📎 Received ${mediaUrls.length} media files`);
-            for (let i = 0; i < mediaUrls.length; i++) {
-                const media = mediaUrls[i];
-                logger.info(`   Media ${i + 1}: ${media.type || 'unknown'} - ${media.url || 'no URL'}`);
+        try {
+            fromPhone = this.cleanPhoneNumber(fromPhone);
+            messageBody = messageBody ? messageBody.trim() : "";
+            
+            const member = await this.getMemberInfo(fromPhone);
+            if (!member) {
+                logger.warn(`❌ Rejected message from unregistered number: ${fromPhone}`);
+                await this.sendSMS(
+                    fromPhone,
+                    "You are not registered in the church SMS system. Please contact a church administrator to be added."
+                );
+                return null;
             }
+
+            logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
+
+            // ========================================================================
+            // WHATSAPP-STYLE REACTION DETECTION (FIRST PRIORITY)
+            // ========================================================================
+            
+            if (messageBody && messageBody.length > 0) {
+                // Check if this is a reaction first
+                const reactionData = await this.reactionSystem.detectReaction(messageBody, fromPhone);
+                
+                if (reactionData) {
+                    // This is a reaction - process silently (no broadcast)
+                    try {
+                        await this.reactionSystem.storeReaction(reactionData);
+                        
+                        logger.info(`✅ Reaction processed silently: ${member.name} ${reactionData.reactionInfo.emoji} → Message ${reactionData.originalMessage.message._id}`);
+                        
+                        // Record reaction activity
+                        await this.updateMemberActivity(fromPhone);
+                        
+                        // Return null - no response needed for reactions (WhatsApp style)
+                        return null;
+                        
+                    } catch (reactionError) {
+                        logger.error(`❌ Error processing reaction: ${reactionError.message}`);
+                        // Don't broadcast the reaction error - continue as normal message
+                    }
+                }
+            }
+
+            // ========================================================================
+            // REGULAR MESSAGE PROCESSING (if not a reaction)
+            // ========================================================================
+
+            // Check for HELP command
+            if (messageBody.toUpperCase() === 'HELP') {
+                return await this.generateHelpMessage(member);
+            }
+
+            // Check for admin commands (if enabled and user is admin)
+            if (member.isAdmin) {
+                if (messageBody.toUpperCase().startsWith('ADD ')) {
+                    return await this.handleAddMemberCommand(fromPhone, messageBody);
+                }
+                if (messageBody.toUpperCase().startsWith('REMOVE ')) {
+                    return await this.handleRemoveMemberCommand(fromPhone, messageBody);
+                }
+                if (messageBody.toUpperCase().startsWith('ADMIN ')) {
+                    return await this.handleAdminCommand(fromPhone, messageBody);
+                }
+                if (messageBody.toUpperCase().startsWith('DEMOTE ')) {
+                    return await this.handleDemoteCommand(fromPhone, messageBody);
+                }
+                if (messageBody.toUpperCase().startsWith('WIPE ')) {
+                    return await this.handleWipeCommand(fromPhone, messageBody);
+                }
+                if (messageBody.toUpperCase().startsWith('CLEANUP ')) {
+                    return await this.handleCleanupCommand(fromPhone, messageBody);
+                }
+                if (messageBody.toUpperCase().startsWith('REACTIONS')) {
+                    return await this.handleReactionsCommand(fromPhone, messageBody);
+                }
+            }
+
+            // Regular message broadcasting
+            logger.info('📡 Processing message broadcast...');
+            return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
+            
+        } catch (error) {
+            logger.error(`❌ Message processing error: ${error.message}`);
+            logger.error(`❌ Stack trace: ${error.stack}`);
+            return "Message processing temporarily unavailable - please try again";
         }
+    }
 
-        const member = await this.getMemberInfo(fromPhone);
+    // ========================================================================
+    // ADMIN REACTIONS COMMAND
+    // ========================================================================
+    
+    async handleReactionsCommand(adminPhone, commandText) {
+        const startTime = Date.now();
+        logger.info(`📊 Admin REACTIONS command from ${adminPhone}: ${commandText}`);
 
-        if (!member) {
-            logger.warn(`❌ Rejected message from unregistered number: ${fromPhone}`);
-            await this.sendSMS(
-                fromPhone,
-                "You are not registered in the church SMS system. Please contact a church administrator to be added."
-            );
-            return null;
+        try {
+            const admin = await this.getMemberInfo(adminPhone);
+            if (!admin || !admin.isAdmin) {
+                return "❌ Access denied. Only administrators can view reaction analytics.";
+            }
+
+            const parts = commandText.trim().split(/\s+/);
+            const subCommand = parts[1]?.toUpperCase() || 'STATS';
+
+            switch (subCommand) {
+                case 'STATS':
+                case 'ANALYTICS':
+                    return await this.getReactionStats();
+                
+                case 'SUMMARY':
+                case 'GENERATE':
+                    return await this.forceReactionSummary();
+                
+                case 'RECENT':
+                    return await this.getRecentReactions();
+                
+                case 'HELP':
+                    return this.getReactionsHelpMessage();
+                
+                default:
+                    return `❌ Unknown reactions command: ${subCommand}\n\n📋 Available commands:\n• REACTIONS STATS - View reaction analytics\n• REACTIONS SUMMARY - Force generate summary\n• REACTIONS RECENT - View recent reactions\n• REACTIONS HELP - Show detailed help`;
+            }
+
+        } catch (error) {
+            const durationMs = Date.now() - startTime;
+            await this.recordPerformanceMetric('reactions_command', durationMs, false, error.message);
+            
+            logger.error(`❌ REACTIONS command error: ${error.message}`);
+            return "❌ Error processing reactions command. Check system logs.";
         }
+    }
 
-        logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
+    async getReactionStats() {
+        try {
+            const analytics = await this.reactionSystem.getReactionAnalytics(7);
+            if (!analytics) {
+                return "❌ Unable to retrieve reaction analytics.";
+            }
 
-        // Check for HELP command
-        if (messageBody.toUpperCase() === 'HELP') {
-            return await this.generateHelpMessage(member);
+            const unprocessedCount = await MessageReaction.countDocuments({ isProcessed: false });
+            const totalReactions = await MessageReaction.countDocuments({});
+
+            let stats = `📊 REACTION ANALYTICS (7 days)\n`;
+            stats += `═══════════════════════════════════\n\n`;
+            stats += `📈 Total Reactions: ${analytics.totalReactions}\n`;
+            stats += `👥 Unique Reactors: ${analytics.uniqueReactors}\n`;
+            stats += `⏳ Pending Processing: ${unprocessedCount}\n`;
+            stats += `📚 All-time Total: ${totalReactions}\n\n`;
+
+            if (Object.keys(analytics.byType).length > 0) {
+                stats += `🎭 BY REACTION TYPE:\n`;
+                for (const [type, count] of Object.entries(analytics.byType)) {
+                    const emoji = this.reactionSystem.emojiMap[type] || '❓';
+                    stats += `   ${emoji} ${type}: ${count}\n`;
+                }
+                stats += `\n`;
+            }
+
+            if (Object.keys(analytics.byDevice).length > 0) {
+                stats += `📱 BY DEVICE TYPE:\n`;
+                for (const [device, count] of Object.entries(analytics.byDevice)) {
+                    stats += `   📱 ${device}: ${count}\n`;
+                }
+            }
+
+            stats += `\n━━━━━━━━━━━━━━━━━━━━━━━\n`;
+            stats += `YesuWay Church • Reaction System`;
+
+            return stats;
+
+        } catch (error) {
+            logger.error(`❌ Error getting reaction stats: ${error.message}`);
+            return "❌ Error retrieving reaction statistics.";
         }
+    }
 
-        // Check for ADD command (admin only)
-        if (messageBody.toUpperCase().startsWith('ADD ')) {
-            return await this.handleAddMemberCommand(fromPhone, messageBody);
+    async forceReactionSummary() {
+        try {
+            const summary = await this.reactionSystem.generateReactionSummary();
+            
+            if (summary) {
+                return `✅ Reaction summary generated and sent to congregation.\n\n${summary.substring(0, 300)}${summary.length > 300 ? '...' : ''}`;
+            } else {
+                return "ℹ️ No pending reactions to summarize.";
+            }
+
+        } catch (error) {
+            logger.error(`❌ Error forcing reaction summary: ${error.message}`);
+            return "❌ Error generating reaction summary.";
         }
+    }
 
-        // Check for REMOVE command (admin only)
-        if (messageBody.toUpperCase().startsWith('REMOVE ')) {
-            return await this.handleRemoveMemberCommand(fromPhone, messageBody);
+    async getRecentReactions() {
+        try {
+            const recentReactions = await MessageReaction.find({})
+                .populate('originalMessageId', 'originalMessage fromName sentAt')
+                .sort({ createdAt: -1 })
+                .limit(10);
+
+            if (recentReactions.length === 0) {
+                return "ℹ️ No recent reactions found.";
+            }
+
+            let response = `📝 RECENT REACTIONS (${recentReactions.length})\n`;
+            response += `═══════════════════════════════════\n\n`;
+
+            for (const reaction of recentReactions) {
+                const messagePreview = reaction.originalMessageId.originalMessage.length > 40
+                    ? reaction.originalMessageId.originalMessage.substring(0, 40) + '...'
+                    : reaction.originalMessageId.originalMessage;
+
+                const timeAgo = this.getTimeAgo(reaction.createdAt);
+                const processed = reaction.isProcessed ? '✅' : '⏳';
+
+                response += `${processed} ${reaction.reactionEmoji} ${reaction.reactorName}\n`;
+                response += `   → "${messagePreview}"\n`;
+                response += `   📅 ${timeAgo} • ${reaction.deviceType}\n\n`;
+            }
+
+            response += `━━━━━━━━━━━━━━━━━━━━━━━\n`;
+            response += `YesuWay Church • Recent Reactions`;
+
+            return response;
+
+        } catch (error) {
+            logger.error(`❌ Error getting recent reactions: ${error.message}`);
+            return "❌ Error retrieving recent reactions.";
         }
+    }
 
-        // Check for WIPE command (admin only) - DANGEROUS OPERATION
-        if (messageBody.toUpperCase().startsWith('WIPE ') || messageBody.toUpperCase() === 'WIPE') {
-            return await this.handleWipeCommand(fromPhone, messageBody);
-        }
+    getReactionsHelpMessage() {
+        return `📊 REACTIONS SYSTEM HELP\n` +
+               `═══════════════════════════════════\n\n` +
+               `🎭 WHATSAPP-STYLE REACTIONS:\n` +
+               `Your church SMS system now supports WhatsApp-style reactions!\n\n` +
+               `✅ HOW IT WORKS:\n` +
+               `• Members react to messages (❤️, 😂, 👍, etc.)\n` +
+               `• Reactions are processed silently (no spam)\n` +
+               `• Daily summaries show reaction counts\n` +
+               `• Professional presentation to congregation\n\n` +
+               `📱 SUPPORTED REACTIONS:\n` +
+               `❤️ Love • 😂 Laugh • 👍 Like • 👎 Dislike\n` +
+               `😮 Wow • 😢 Sad • 😠 Angry • 🙏 Pray\n` +
+               `✨ Praise • 💯 Amen\n\n` +
+               `🔑 ADMIN COMMANDS:\n` +
+               `• REACTIONS STATS - View analytics\n` +
+               `• REACTIONS SUMMARY - Force summary\n` +
+               `• REACTIONS RECENT - Recent activity\n\n` +
+               `⏰ AUTOMATIC SUMMARIES:\n` +
+               `• Daily at 8:00 PM\n` +
+               `• After 30min conversation silence\n` +
+               `• Only when reactions are pending\n\n` +
+               `YesuWay Church • Advanced Reactions`;
+    }
 
-        // Check for ADMIN command (admin only) - PRIVILEGE MANAGEMENT
-        if (messageBody.toUpperCase().startsWith('ADMIN ')) {
-            return await this.handleAdminCommand(fromPhone, messageBody);
-        }
-
-        // Check for DEMOTE command (admin only) - REMOVE ADMIN PRIVILEGES
-        if (messageBody.toUpperCase().startsWith('DEMOTE ')) {
-            return await this.handleDemoteCommand(fromPhone, messageBody);
-        }
-
-        // Check for CLEANUP command (admin only)
-        if (messageBody.toUpperCase().startsWith('CLEANUP ') || messageBody.toUpperCase() === 'CLEANUP') {
-            return await this.handleCleanupCommand(fromPhone, messageBody);
-        }
-
-        // Regular message broadcasting
-        logger.info('📡 Processing message broadcast...');
-        return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
+    getTimeAgo(date) {
+        const now = new Date();
+        const diffInMinutes = Math.floor((now - date) / (1000 * 60));
         
-    } catch (error) {
-        logger.error(`❌ Message processing error: ${error.message}`);
-        logger.error(`❌ Stack trace: ${error.stack}`);
-        return "Message processing temporarily unavailable - please try again";
+        if (diffInMinutes < 1) return 'just now';
+        if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
+        
+        const diffInHours = Math.floor(diffInMinutes / 60);
+        if (diffInHours < 24) return `${diffInHours}h ago`;
+        
+        const diffInDays = Math.floor(diffInHours / 24);
+        return `${diffInDays}d ago`;
     }
 }
-}
+
 async function setupProductionCongregation() {
     logger.info('🔧 Setting up production congregation...');
 

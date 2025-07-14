@@ -17,6 +17,78 @@ class MongoDBManager {
         this.maxRetries = 5;
     }
 
+        // Reaction-specific methods
+    async getReactionsByMessage(messageId) {
+        try {
+            return await MessageReaction.find({ originalMessageId: messageId })
+                .sort({ createdAt: -1 });
+        } catch (error) {
+            this.logger.error(`❌ Error getting reactions by message: ${error.message}`);
+            return [];
+        }
+    }
+
+    async getReactionsByUser(phoneNumber, limit = 50) {
+        try {
+            return await MessageReaction.find({ reactorPhone: phoneNumber })
+                .populate('originalMessageId', 'originalMessage fromName sentAt')
+                .sort({ createdAt: -1 })
+                .limit(limit);
+        } catch (error) {
+            this.logger.error(`❌ Error getting reactions by user: ${error.message}`);
+            return [];
+        }
+    }
+
+    async cleanupOldReactions(daysOld = 30) {
+        try {
+            const cutoffDate = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000);
+            
+            const deleteResult = await MessageReaction.deleteMany({
+                createdAt: { $lt: cutoffDate },
+                isProcessed: true
+            });
+
+            this.logger.info(`🧹 Cleaned up ${deleteResult.deletedCount} old reactions (${daysOld}+ days old)`);
+            return deleteResult.deletedCount;
+
+        } catch (error) {
+            this.logger.error(`❌ Error cleaning up old reactions: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async getReactionSummaryData(hoursBack = 24) {
+        try {
+            const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
+            
+            const pipeline = [
+                { $match: { createdAt: { $gte: since } } },
+                {
+                    $group: {
+                        _id: '$originalMessageId',
+                        reactions: {
+                            $push: {
+                                type: '$reactionType',
+                                emoji: '$reactionEmoji',
+                                reactor: '$reactorName',
+                                createdAt: '$createdAt'
+                            }
+                        },
+                        reactionCount: { $sum: 1 }
+                    }
+                },
+                { $sort: { reactionCount: -1 } }
+            ];
+
+            return await MessageReaction.aggregate(pipeline);
+
+        } catch (error) {
+            this.logger.error(`❌ Error getting reaction summary data: ${error.message}`);
+            return [];
+        }
+    }
+
     async connect(connectionString, options = {}) {
         const defaultOptions = {
             maxPoolSize: 10,
@@ -101,6 +173,7 @@ class MongoDBManager {
         }
     }
 
+    
     async getAllActiveMembers(excludePhone = null) {
         try {
             const filter = { active: true };
