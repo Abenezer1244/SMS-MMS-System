@@ -14,12 +14,12 @@ const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const winston = require('winston');
 const morgan = require('morgan');
-const smsSystem = new ProductionChurchSMS();
+
 
 // MongoDB imports
 const MongoDBManager = require('./database');
 // UPDATE this import line
-// UPDATE this import line
+
 const {
     Group,
     Member,
@@ -2999,6 +2999,8 @@ async function setupProductionCongregation() {
         logger.error(`❌ Production setup error: ${error.message}`);
     }
 }
+
+const smsSystem = new ProductionChurchSMS();
 
 // Express Routes
 app.use((req, res, next) => {
