@@ -147,36 +147,40 @@ class WhatsAppStyleReactionSystem {
         }
         
         // WhatsApp-style reaction patterns (production-tested)
-        this.reactionPatterns = {
-            // iPhone patterns (iOS 15+)
-            iphone: [
-                /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+"(.+)"$/,
-                /^(❤️|👍|👎|😂|‼️|❓)\s+"(.+)"$/,
-                /^Reacted\s+(❤️|👍|👎|😂|‼️|❓)\s+to\s+"(.+)"$/,
-                // 🔥 NEW: Handle your format with "to"
-                /^(❤️|👍|👎|😂|‼️|❓)\s+to\s+"(.+)"$/
-            ],
-            
-            // Android patterns (RCS/SMS)
-            android: [
-                /^Reacted\s+(❤️|😂|😮|😢|😠|👍|👎)\s+to\s+"(.+)"$/,
-                /^(❤️|😂|😮|😢|😠|👍|👎)\s+"(.+)"$/,
-                /^Reaction:\s+(❤️|😂|😮|😢|😠|👍|👎)\s+-\s+"(.+)"$/,
-                // 🔥 NEW: Handle your format with "to"
-                /^(❤️|😂|😮|😢|😠|👍|👎)\s+to\s+"(.+)"$/
-            ],
-            
-            // Generic/fallback patterns
-            generic: [
-                /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s*(.+)$/,
-                /^Reacted\s+(.+)\s+to\s+"(.+)"$/,
-                /^(.+)\s+reaction:\s+"(.+)"$/,
-                // 🔥 NEW: Handle your specific format
-                /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+to\s+"(.+)"$/,
-                // 🔥 NEW: Handle format with sender name
-                /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+to\s+"([^:]+):\s*(.+)"$/
-            ]
-        };
+this.reactionPatterns = {
+    // iPhone patterns (iOS 15+)
+    iphone: [
+        /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+"(.+)"$/,
+        /^(❤️|👍|👎|😂|‼️|❓)\s+"(.+)"$/,
+        /^Reacted\s+(❤️|👍|👎|😂|‼️|❓)\s+to\s+"(.+)"$/,
+        /^(❤️|👍|👎|😂|‼️|❓)\s+to\s+"(.+)"$/,
+        // 🔥 ADD: Handle sender format for iPhone reactions
+        /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+"([^:]+):\s*(.+)"$/
+    ],
+    
+    // Android patterns (RCS/SMS)
+    android: [
+        /^Reacted\s+(❤️|😂|😮|😢|😠|👍|👎)\s+to\s+"(.+)"$/,
+        /^(❤️|😂|😮|😢|😠|👍|👎)\s+"(.+)"$/,
+        /^Reaction:\s+(❤️|😂|😮|😢|😠|👍|👎)\s+-\s+"(.+)"$/,
+        /^(❤️|😂|😮|😢|😠|👍|👎)\s+to\s+"(.+)"$/
+    ],
+    
+    // Generic/fallback patterns
+    generic: [
+        // Your specific format: ❤️ to "MIKE: Test"
+        /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+to\s+"([^:]+):\s*(.+)"$/,
+        // Standard format: ❤️ to "message"
+        /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+to\s+"(.+)"$/,
+        // Direct format: ❤️ "message"
+        /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+"(.+)"$/,
+        // Simple format: ❤️ message
+        /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+(.+)$/,
+        // Other formats
+        /^Reacted\s+(.+)\s+to\s+"(.+)"$/,
+        /^(.+)\s+reaction:\s+"(.+)"$/
+    ]
+};
 
         // Emoji to reaction type mapping
         this.emojiMap = {
@@ -278,19 +282,28 @@ async processReactionMatch(match, deviceType, originalText, senderPhone) {
         this.logger.info(`🔧 Processing reaction match: Device=${deviceType}, Match=${JSON.stringify(match)}`);
 
         // Extract reaction and message based on device pattern
-        if (deviceType === 'iphone' || deviceType === 'android') {
+        if (deviceType === 'iphone') {
+            reactionIdentifier = match[1];
+            messageQuote = match[2];
+            
+            // 🔥 NEW: Handle iPhone sender format "Loved "MIKE: Test""
+            if (match[3]) {
+                // Pattern matched iPhone reaction with sender: "Loved "MIKE: Test""
+                // match[1] = Loved, match[2] = MIKE, match[3] = Test
+                messageQuote = match[3]; // Just the message part
+                this.logger.info(`🔧 iPhone: Extracted message from sender format: "${messageQuote}"`);
+            }
+        } else if (deviceType === 'android') {
             reactionIdentifier = match[1];
             messageQuote = match[2];
         } else { // generic
             reactionIdentifier = match[1];
             messageQuote = match[2] || match[1];
             
-            // 🔥 NEW: Handle three-group match for "SENDER: message" format
+            // Handle three-group match for "SENDER: message" format
             if (match[3]) {
-                // Pattern matched "❤️ to "MIKE: Test""
-                // match[1] = ❤️, match[2] = MIKE, match[3] = Test
                 messageQuote = match[3]; // Just the message part
-                this.logger.info(`🔧 Extracted message from sender format: "${messageQuote}"`);
+                this.logger.info(`🔧 Generic: Extracted message from sender format: "${messageQuote}"`);
             }
         }
 
@@ -549,67 +562,74 @@ async findOriginalMessageByContent(cleanQuote) {
     // REACTION STORAGE
     // ========================================================================
 
-    async storeReaction(reactionData) {
-        try {
-            const {
-                originalMessage,
-                messageQuote,
-                reactionInfo,
-                reactor,
-                deviceType,
-                originalText,
-                confidence
-            } = reactionData;
+async storeReaction(reactionData) {
+    try {
+        const {
+            originalMessage,
+            messageQuote,
+            reactionInfo,
+            reactor,
+            deviceType,
+            originalText,
+            confidence
+        } = reactionData;
 
-            // Check for duplicate reactions
-            const existingReaction = await MessageReaction.findOne({
-                originalMessageId: originalMessage.message._id,
-                reactorPhone: this.smsSystem.cleanPhoneNumber(reactor.phoneNumber),
-                reactionType: reactionInfo.type
-            });
+        // 🔥 FIX: Use the correct phone field from member object
+        const reactorPhone = reactor.phoneNumber || reactor.phone || 'unknown';
+        
+        this.logger.info(`🔧 DEBUG: Reactor object: ${JSON.stringify(reactor)}`);
+        this.logger.info(`🔧 DEBUG: Using reactorPhone: ${reactorPhone}`);
 
-            if (existingReaction) {
-                this.logger.info(`ℹ️ Duplicate reaction ignored: ${reactor.name} already ${reactionInfo.name}d this message`);
-                return null;
-            }
+        // Check for duplicate reactions
+        const existingReaction = await MessageReaction.findOne({
+            originalMessageId: originalMessage.message._id,
+            reactorPhone: reactorPhone,
+            reactionType: reactionInfo.type
+        });
 
-            // Create reaction record
-            const reaction = new MessageReaction({
-                originalMessageId: originalMessage.message._id,
-                originalMessageText: originalMessage.message.originalMessage,
-                originalMessageHash: this.generateMessageHash(
-                    this.cleanMessageForMatching(originalMessage.message.originalMessage)
-                ),
-                reactorPhone: this.smsSystem.cleanPhoneNumber(reactor.phoneNumber),
-                reactorName: reactor.name,
-                reactionType: reactionInfo.type,
-                reactionEmoji: reactionInfo.emoji,
-                originalReactionText: originalText,
-                deviceType: deviceType,
-                processingMethod: originalMessage.matchType,
-                confidence: confidence || 1.0,
-                isProcessed: false,
-                includedInSummary: false
-            });
-
-            await reaction.save();
-
-            this.logger.info(`✅ Reaction stored: ${reactor.name} ${reactionInfo.emoji} → Message ${originalMessage.message._id}`);
-
-            // Record analytics
-            await this.smsSystem.dbManager.recordAnalytic(
-                'reaction_received',
-                1,
-                `${reactionInfo.type} by ${reactor.name} (${deviceType}, ${originalMessage.matchType}, ${(confidence * 100).toFixed(1)}% confidence)`
-            );
-
-            return reaction;
-
-        } catch (error) {
-            this.logger.error(`❌ Error storing reaction: ${error.message}`);
-            throw error;
+        if (existingReaction) {
+            this.logger.info(`ℹ️ Duplicate reaction ignored: ${reactor.name} already ${reactionInfo.name}d this message`);
+            return null;
         }
+
+        // Create reaction record with correct phone field
+        const reaction = new MessageReaction({
+            originalMessageId: originalMessage.message._id,
+            originalMessageText: originalMessage.message.originalMessage,
+            originalMessageHash: this.generateMessageHash(
+                this.cleanMessageForMatching(originalMessage.message.originalMessage)
+            ),
+            reactorPhone: reactorPhone, // 🔥 FIX: Use the correct variable
+            reactorName: reactor.name,
+            reactionType: reactionInfo.type,
+            reactionEmoji: reactionInfo.emoji,
+            originalReactionText: originalText,
+            deviceType: deviceType,
+            processingMethod: originalMessage.matchType,
+            confidence: confidence || 1.0,
+            isProcessed: false,
+            includedInSummary: false
+        });
+
+        await reaction.save();
+
+        this.logger.info(`✅ Reaction stored successfully: ${reactor.name} ${reactionInfo.emoji} → Message ${originalMessage.message._id}`);
+
+        // Record analytics
+        await this.smsSystem.dbManager.recordAnalytic(
+            'reaction_received',
+            1,
+            `${reactionInfo.type} by ${reactor.name} (${deviceType}, ${originalMessage.matchType}, ${(confidence * 100).toFixed(1)}% confidence)`
+        );
+
+        return reaction;
+
+    } catch (error) {
+        this.logger.error(`❌ Error storing reaction: ${error.message}`);
+        this.logger.error(`❌ Full error: ${JSON.stringify(error)}`);
+        throw error;
     }
+}
 
     // ========================================================================
     // REACTION SUMMARIES
