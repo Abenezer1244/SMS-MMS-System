@@ -575,6 +575,7 @@ async storeReaction(reactionData) {
         } = reactionData;
 
         // 🔥 FIX: Use the correct phone field from member object
+        // 🔥 In your storeReaction method:
         const reactorPhone = reactor.phoneNumber || reactor.phone || 'unknown';
         
         this.logger.info(`🔧 DEBUG: Reactor object: ${JSON.stringify(reactor)}`);
@@ -3808,21 +3809,14 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
                 const reactionData = await this.reactionSystem.detectReaction(messageBody, fromPhone);
                 
                 if (reactionData) {
-                    // This is a reaction - process silently (no broadcast)
                     try {
                         await this.reactionSystem.storeReaction(reactionData);
-                        
-                        logger.info(`✅ REACTION PROCESSED SILENTLY: ${member.name} ${reactionData.reactionInfo.emoji} → Message ${reactionData.originalMessage.message._id}`);
-                        
-                        // Record reaction activity
-                        await this.updateMemberActivity(fromPhone);
-                        
-                        // 🔥 CRITICAL: Return null - no response, no broadcast!
-                        return null;
-                        
+                        logger.info(`✅ REACTION PROCESSED SILENTLY`);
+                        return null; // CRITICAL: Always return null for reactions
                     } catch (reactionError) {
                         logger.error(`❌ Error processing reaction: ${reactionError.message}`);
-                        // Don't broadcast the reaction error - continue as normal message
+                        // 🔥 STILL return null - don't broadcast even if storage fails
+                        return null;
                     }
                 } else {
                     logger.info(`ℹ️ Not a reaction, processing as regular message`);
