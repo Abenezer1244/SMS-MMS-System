@@ -14,6 +14,7 @@ const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const winston = require('winston');
 const morgan = require('morgan');
+const smsSystem = new ProductionChurchSMS();
 
 // MongoDB imports
 const MongoDBManager = require('./database');
@@ -2745,7 +2746,7 @@ async cleanupPhone(phoneInput) {
         if (!cleanPhone) {
             return `❌ Invalid phone number: ${phoneInput}`;
         }
-
+        
         // Find all members with this phone (any format)
         const phoneDigits = cleanPhone.replace(/\D/g, '');
         const formats = [
