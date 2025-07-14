@@ -1106,4 +1106,5 @@ module.exports = {
     DeliveryLog,
     SystemAnalytics,
     PerformanceMetrics,
+    MessageReaction
 };
