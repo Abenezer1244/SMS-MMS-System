@@ -14,6 +14,7 @@ const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const winston = require('winston');
 const morgan = require('morgan');
+const schedule = require('node-schedule'); 
 
 
 // MongoDB imports
@@ -132,6 +133,19 @@ class WhatsAppStyleReactionSystem {
         this.smsSystem = smsSystem;
         this.logger = logger;
         
+        // Verify required dependencies
+        try {
+            if (!schedule) {
+                throw new Error('node-schedule package not found. Run: npm install node-schedule');
+            }
+            if (!crypto) {
+                throw new Error('crypto module not available');
+            }
+        } catch (depError) {
+            this.logger.error(`❌ Dependency check failed: ${depError.message}`);
+            throw depError;
+        }
+        
         // WhatsApp-style reaction patterns (production-tested)
         this.reactionPatterns = {
             // iPhone patterns (iOS 15+)
@@ -158,23 +172,23 @@ class WhatsAppStyleReactionSystem {
 
         // Emoji to reaction type mapping
         this.emojiMap = {
-            '❤️': { type: 'love', name: 'Love' },
-            '😍': { type: 'love', name: 'Love' },
-            '😂': { type: 'laugh', name: 'Laugh' },
-            '🤣': { type: 'laugh', name: 'Laugh' },
-            '👍': { type: 'like', name: 'Like' },
-            '👎': { type: 'dislike', name: 'Dislike' },
-            '😮': { type: 'surprise', name: 'Wow' },
-            '😯': { type: 'surprise', name: 'Wow' },
-            '😢': { type: 'sad', name: 'Sad' },
-            '😭': { type: 'sad', name: 'Sad' },
-            '😠': { type: 'angry', name: 'Angry' },
-            '😡': { type: 'angry', name: 'Angry' },
-            '🙏': { type: 'pray', name: 'Pray' },
-            '✨': { type: 'praise', name: 'Praise' },
-            '💯': { type: 'amen', name: 'Amen' },
-            '‼️': { type: 'surprise', name: 'Wow' },
-            '❓': { type: 'surprise', name: 'Question' }
+            '❤️': { type: 'love', name: 'Love', emoji: '❤️' },
+            '😍': { type: 'love', name: 'Love', emoji: '❤️' },
+            '😂': { type: 'laugh', name: 'Laugh', emoji: '😂' },
+            '🤣': { type: 'laugh', name: 'Laugh', emoji: '😂' },
+            '👍': { type: 'like', name: 'Like', emoji: '👍' },
+            '👎': { type: 'dislike', name: 'Dislike', emoji: '👎' },
+            '😮': { type: 'surprise', name: 'Wow', emoji: '😮' },
+            '😯': { type: 'surprise', name: 'Wow', emoji: '😮' },
+            '😢': { type: 'sad', name: 'Sad', emoji: '😢' },
+            '😭': { type: 'sad', name: 'Sad', emoji: '😢' },
+            '😠': { type: 'angry', name: 'Angry', emoji: '😠' },
+            '😡': { type: 'angry', name: 'Angry', emoji: '😠' },
+            '🙏': { type: 'pray', name: 'Pray', emoji: '🙏' },
+            '✨': { type: 'praise', name: 'Praise', emoji: '✨' },
+            '💯': { type: 'amen', name: 'Amen', emoji: '💯' },
+            '‼️': { type: 'surprise', name: 'Wow', emoji: '❗' },
+            '❓': { type: 'surprise', name: 'Question', emoji: '❓' }
         };
 
         // Text reaction keywords
@@ -190,9 +204,19 @@ class WhatsAppStyleReactionSystem {
             'pray': { type: 'pray', emoji: '🙏' }
         };
 
-        this.setupReactionScheduler();
-        this.logger.info('✅ WhatsApp-style reaction system initialized');
+        // Initialize scheduler with error handling
+        try {
+            this.setupReactionScheduler();
+            this.logger.info('✅ WhatsApp-style reaction system initialized successfully');
+        } catch (schedulerError) {
+            this.logger.error(`❌ Scheduler setup failed: ${schedulerError.message}`);
+            this.logger.warn('⚠️ Continuing without automated scheduling');
+        }
     }
+
+    // ========================================================================
+    // CORE REACTION DETECTION
+    // ========================================================================
 
     async detectReaction(messageText, senderPhone) {
         const startTime = Date.now();
@@ -304,7 +328,7 @@ class WhatsAppStyleReactionSystem {
         if (this.emojiMap[identifier]) {
             return {
                 type: this.emojiMap[identifier].type,
-                emoji: identifier,
+                emoji: this.emojiMap[identifier].emoji,
                 name: this.emojiMap[identifier].name
             };
         }
@@ -325,7 +349,7 @@ class WhatsAppStyleReactionSystem {
             if (identifier.includes(emoji)) {
                 return {
                     type: data.type,
-                    emoji: emoji,
+                    emoji: data.emoji,
                     name: data.name
                 };
             }
@@ -333,6 +357,10 @@ class WhatsAppStyleReactionSystem {
 
         return null;
     }
+
+    // ========================================================================
+    // SMART MESSAGE MATCHING
+    // ========================================================================
 
     async findOriginalMessage(messageQuote) {
         try {
@@ -410,7 +438,6 @@ class WhatsAppStyleReactionSystem {
     }
 
     generateMessageHash(message) {
-        const crypto = require('crypto');
         return crypto.createHash('sha256').update(message).digest('hex');
     }
 
@@ -453,6 +480,10 @@ class WhatsAppStyleReactionSystem {
         return matrix[str2.length][str1.length];
     }
 
+    // ========================================================================
+    // REACTION STORAGE
+    // ========================================================================
+
     async storeReaction(reactionData) {
         try {
             const {
@@ -468,7 +499,7 @@ class WhatsAppStyleReactionSystem {
             // Check for duplicate reactions
             const existingReaction = await MessageReaction.findOne({
                 originalMessageId: originalMessage.message._id,
-                reactorPhone: reactor.phone || this.smsSystem.cleanPhoneNumber(reactor.phoneNumber),
+                reactorPhone: this.smsSystem.cleanPhoneNumber(reactor.phoneNumber),
                 reactionType: reactionInfo.type
             });
 
@@ -484,7 +515,7 @@ class WhatsAppStyleReactionSystem {
                 originalMessageHash: this.generateMessageHash(
                     this.cleanMessageForMatching(originalMessage.message.originalMessage)
                 ),
-                reactorPhone: reactor.phone || this.smsSystem.cleanPhoneNumber(reactor.phoneNumber),
+                reactorPhone: this.smsSystem.cleanPhoneNumber(reactor.phoneNumber),
                 reactorName: reactor.name,
                 reactionType: reactionInfo.type,
                 reactionEmoji: reactionInfo.emoji,
@@ -515,19 +546,9 @@ class WhatsAppStyleReactionSystem {
         }
     }
 
-    setupReactionScheduler() {
-        // Daily summary at 8 PM
-        schedule.scheduleJob('0 20 * * *', async () => {
-            this.logger.info('⏰ Daily reaction summary triggered');
-            try {
-                await this.generateReactionSummary();
-            } catch (error) {
-                this.logger.error(`❌ Daily reaction summary failed: ${error.message}`);
-            }
-        });
-
-        this.logger.info('✅ Reaction scheduler configured');
-    }
+    // ========================================================================
+    // REACTION SUMMARIES
+    // ========================================================================
 
     async generateReactionSummary() {
         try {
@@ -675,6 +696,110 @@ class WhatsAppStyleReactionSystem {
         } catch (error) {
             this.logger.error(`❌ Error broadcasting reaction summary: ${error.message}`);
             throw error;
+        }
+    }
+
+    // ========================================================================
+    // SCHEDULING WITH PROPER ERROR HANDLING
+    // ========================================================================
+
+    setupReactionScheduler() {
+        try {
+            if (!schedule) {
+                this.logger.warn('⚠️ node-schedule not available - skipping automated scheduling');
+                return;
+            }
+
+            // Daily summary at 8 PM
+            schedule.scheduleJob('0 20 * * *', async () => {
+                this.logger.info('⏰ Daily reaction summary triggered');
+                try {
+                    await this.generateReactionSummary();
+                } catch (error) {
+                    this.logger.error(`❌ Daily reaction summary failed: ${error.message}`);
+                }
+            });
+
+            // Periodic check every 30 minutes for active conversations
+            schedule.scheduleJob('*/30 * * * *', async () => {
+                try {
+                    await this.checkForPeriodicSummary();
+                } catch (error) {
+                    this.logger.error(`❌ Periodic reaction check failed: ${error.message}`);
+                }
+            });
+
+            this.logger.info('✅ Reaction scheduler configured successfully');
+
+        } catch (error) {
+            this.logger.error(`❌ Failed to setup reaction scheduler: ${error.message}`);
+            this.logger.warn('⚠️ Automated summaries will not work - manual generation available via admin commands');
+        }
+    }
+
+    async checkForPeriodicSummary() {
+        try {
+            // Check if there's been conversation silence for 30+ minutes
+            const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+            
+            const recentMessages = await this.smsSystem.dbManager.getRecentMessages(1);
+            const lastMessage = recentMessages[0];
+            
+            if (lastMessage && lastMessage.sentAt < thirtyMinutesAgo) {
+                // Check for unprocessed reactions
+                const unprocessedCount = await MessageReaction.countDocuments({
+                    isProcessed: false
+                });
+                
+                if (unprocessedCount >= 5) { // Only if we have 5+ reactions
+                    this.logger.info('⏰ Conversation silence detected with pending reactions - generating summary');
+                    await this.generateReactionSummary();
+                }
+            }
+        } catch (error) {
+            this.logger.error(`❌ Error checking for periodic summary: ${error.message}`);
+        }
+    }
+
+    // ========================================================================
+    // ANALYTICS
+    // ========================================================================
+
+    async getReactionAnalytics(days = 7) {
+        try {
+            const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+            
+            const pipeline = [
+                { $match: { createdAt: { $gte: since } } },
+                {
+                    $group: {
+                        _id: {
+                            reactionType: '$reactionType',
+                            deviceType: '$deviceType'
+                        },
+                        count: { $sum: 1 },
+                        reactors: { $addToSet: '$reactorName' }
+                    }
+                }
+            ];
+
+            const results = await MessageReaction.aggregate(pipeline);
+            
+            return {
+                totalReactions: results.reduce((sum, r) => sum + r.count, 0),
+                byType: results.reduce((acc, r) => {
+                    acc[r._id.reactionType] = (acc[r._id.reactionType] || 0) + r.count;
+                    return acc;
+                }, {}),
+                byDevice: results.reduce((acc, r) => {
+                    acc[r._id.deviceType] = (acc[r._id.deviceType] || 0) + r.count;
+                    return acc;
+                }, {}),
+                uniqueReactors: new Set(results.flatMap(r => r.reactors)).size
+            };
+        } catch (error) {
+            this.logger.error(`❌ Error getting reaction analytics: ${error.message}`);
+            return null;
         }
     }
 }
