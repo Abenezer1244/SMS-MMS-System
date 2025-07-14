@@ -541,6 +541,30 @@ class ProductionChurchSMS {
         }
     }
 
+        getMediaTypeFromMime(mimeType) {
+            if (mimeType.includes('image/')) {
+                if (mimeType.includes('gif')) return 'GIF';
+                return 'Photo';
+            } else if (mimeType.includes('video/')) {
+                return 'Video';
+            } else if (mimeType.includes('audio/')) {
+                return 'Audio';
+            } else {
+                return 'File';
+            }
+        }
+
+        generateCleanFilename(mimeType, mediaIndex) {
+            const mediaType = this.getMediaTypeFromMime(mimeType);
+            const timestamp = Date.now();
+            const fileExtension = mime.extension(mimeType) || 'bin';
+            
+            const cleanFilename = `church/media/${timestamp}_${mediaIndex}.${fileExtension}`;
+            const displayName = `${mediaType} ${mediaIndex}`;
+            
+            return { cleanFilename, displayName };
+        }
+
 // 3. REPLACE your existing processMediaFiles method with this enhanced version
 async processMediaFiles(messageId, mediaUrls) {
     logger.info(`🔄 Processing ${mediaUrls.length} media files with Cloudflare Stream integration for message ${messageId}`);
@@ -586,6 +610,8 @@ async processMediaFiles(messageId, mediaUrls) {
                     // Continue with original video processing
                 }
             }
+
+            
 
             // Enhanced filename generation for stream-optimized content
             const { cleanFilename, displayName } = this.generateCleanFilename(finalMimeType, i + 1);
@@ -755,15 +781,16 @@ async processMediaFiles(messageId, mediaUrls) {
 
     formatMessageWithMedia(originalMessage, sender, mediaLinks = null) {
         if (mediaLinks && mediaLinks.length > 0) {
+            // For media messages, ONLY show the sender name and media links
             if (mediaLinks.length === 1) {
                 const mediaItem = mediaLinks[0];
-                return `💬 ${sender.name}:\n${originalMessage}\n\n🔗 ${mediaItem.displayName}: ${mediaItem.url}`;
+                return `${sender.name}:\n${mediaItem.url}`;
             } else {
-                const mediaText = mediaLinks.map(item => `🔗 ${item.displayName}: ${item.url}`).join('\n');
-                return `💬 ${sender.name}:\n${originalMessage}\n\n${mediaText}`;
+                const mediaText = mediaLinks.map(item => item.url).join('\n');
+                return `${sender.name}:\n${mediaText}`;
             }
         } else {
-            return `💬 ${sender.name}:\n${originalMessage}`;
+            return `${sender.name}:\n${originalMessage}`;
         }
     }
 
@@ -790,7 +817,7 @@ async processMediaFiles(messageId, mediaUrls) {
 
             if (!messageText || messageText.trim() === '') {
                 if (mediaUrls && mediaUrls.length > 0) {
-                    messageText = `[Media content - ${mediaUrls.length} file(s)]`;
+                    messageText = ""; // Will be replaced by media links
                 } else {
                     messageText = "[Empty message]";
                 }
@@ -2832,10 +2859,10 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
         messageBody = messageBody ? messageBody.trim() : "";
         
         if (!messageBody && mediaUrls && mediaUrls.length > 0) {
-            messageBody = `[Media content - ${mediaUrls.length} file(s)]`;
+            messageBody = ""; // Empty for media-only messages
         }
-        
-        if (!messageBody) {
+
+        if (!messageBody && (!mediaUrls || mediaUrls.length === 0)) {
             messageBody = "[Empty message]";
         }
 
