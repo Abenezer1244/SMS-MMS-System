@@ -3685,7 +3685,7 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
         messageBody = messageBody ? messageBody.trim() : "";
         
         if (!messageBody && mediaUrls && mediaUrls.length > 0) {
-            messageBody = ""; // Empty for media-only messages
+            messageBody = "";
         }
 
         if (!messageBody && (!mediaUrls || mediaUrls.length === 0)) {
@@ -3706,35 +3706,47 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
         logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
 
         // ========================================================================
-        // WHATSAPP-STYLE REACTION DETECTION (FIRST PRIORITY)
+        // 🔥 CRITICAL: REACTION DETECTION MUST BE FIRST!
         // ========================================================================
         
         if (messageBody && messageBody.length > 0) {
-            // Check if this is a reaction first
-            const reactionData = await this.reactionSystem.detectReaction(messageBody, fromPhone);
+            logger.info(`🔍 About to check for reactions in: "${messageBody}"`);
             
-            if (reactionData) {
-                // This is a reaction - process silently (no broadcast)
-                try {
-                    await this.reactionSystem.storeReaction(reactionData);
-                    
-                    logger.info(`✅ Reaction processed silently: ${member.name} ${reactionData.reactionInfo.emoji} → Message ${reactionData.originalMessage.message._id}`);
-                    
-                    // Record reaction activity
-                    await this.updateMemberActivity(fromPhone);
-                    
-                    // Return null - no response needed for reactions (WhatsApp style)
-                    return null;
-                    
-                } catch (reactionError) {
-                    logger.error(`❌ Error processing reaction: ${reactionError.message}`);
-                    // Don't broadcast the reaction error - continue as normal message
+            // Check if this reactionSystem exists
+            if (!this.reactionSystem) {
+                logger.error(`❌ CRITICAL: reactionSystem not initialized!`);
+                logger.error(`❌ Check your constructor: this.reactionSystem = new WhatsAppStyleReactionSystem(this, logger);`);
+            } else {
+                logger.info(`✅ Reaction system is available, detecting...`);
+                
+                // Check if this is a reaction first
+                const reactionData = await this.reactionSystem.detectReaction(messageBody, fromPhone);
+                
+                if (reactionData) {
+                    // This is a reaction - process silently (no broadcast)
+                    try {
+                        await this.reactionSystem.storeReaction(reactionData);
+                        
+                        logger.info(`✅ REACTION PROCESSED SILENTLY: ${member.name} ${reactionData.reactionInfo.emoji} → Message ${reactionData.originalMessage.message._id}`);
+                        
+                        // Record reaction activity
+                        await this.updateMemberActivity(fromPhone);
+                        
+                        // 🔥 CRITICAL: Return null - no response, no broadcast!
+                        return null;
+                        
+                    } catch (reactionError) {
+                        logger.error(`❌ Error processing reaction: ${reactionError.message}`);
+                        // Don't broadcast the reaction error - continue as normal message
+                    }
+                } else {
+                    logger.info(`ℹ️ Not a reaction, processing as regular message`);
                 }
             }
         }
 
         // ========================================================================
-        // REGULAR MESSAGE PROCESSING (if not a reaction)
+        // REGULAR MESSAGE PROCESSING (only if not a reaction)
         // ========================================================================
 
         // Check for HELP command
@@ -3779,6 +3791,78 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
         logger.error(`❌ Message processing error: ${error.message}`);
         logger.error(`❌ Stack trace: ${error.stack}`);
         return "Message processing temporarily unavailable - please try again";
+    }
+}
+
+// ============================================================================
+// STEP 2: ADD DEBUG VERSION OF REACTION DETECTION
+// ============================================================================
+// Add this temporary debug method to your WhatsAppStyleReactionSystem class
+
+async detectReaction(messageText, senderPhone) {
+    const startTime = Date.now();
+    
+    try {
+        this.logger.info(`🔍 DEBUGGING: Analyzing potential reaction from ${senderPhone}: "${messageText}"`);
+
+        // Debug: Check if patterns are loaded
+        if (!this.reactionPatterns) {
+            this.logger.error(`❌ CRITICAL: reactionPatterns not initialized!`);
+            return null;
+        }
+
+        this.logger.info(`🔧 Available pattern types: ${Object.keys(this.reactionPatterns).join(', ')}`);
+
+        // Try each device type pattern
+        for (const deviceType of ['iphone', 'android', 'generic']) {
+            const patterns = this.reactionPatterns[deviceType];
+            this.logger.info(`🔧 Testing ${deviceType} patterns (${patterns.length} patterns)`);
+            
+            for (let i = 0; i < patterns.length; i++) {
+                const pattern = patterns[i];
+                this.logger.info(`🔧 Testing pattern ${i + 1}: ${pattern}`);
+                
+                const match = messageText.match(pattern);
+                
+                if (match) {
+                    this.logger.info(`✅ PATTERN MATCH FOUND! Device: ${deviceType}, Pattern: ${i + 1}`);
+                    this.logger.info(`✅ Match groups: ${JSON.stringify(match)}`);
+                    
+                    const reaction = await this.processReactionMatch(
+                        match, deviceType, messageText, senderPhone
+                    );
+                    
+                    if (reaction) {
+                        const durationMs = Date.now() - startTime;
+                        await this.smsSystem.recordPerformanceMetric(
+                            'reaction_detection', durationMs, true
+                        );
+                        
+                        this.logger.info(`🎉 REACTION SUCCESSFULLY DETECTED AND PROCESSED!`);
+                        return reaction;
+                    } else {
+                        this.logger.warn(`⚠️ Pattern matched but reaction processing failed`);
+                    }
+                } else {
+                    this.logger.info(`ℹ️ Pattern ${i + 1} no match`);
+                }
+            }
+        }
+
+        // No reaction pattern matched
+        this.logger.info(`ℹ️ No reaction pattern detected in: "${messageText}"`);
+        this.logger.info(`💡 For manual testing, try: ❤️ "test message"`);
+        return null;
+
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.smsSystem.recordPerformanceMetric(
+            'reaction_detection', durationMs, false, error.message
+        );
+        
+        this.logger.error(`❌ Reaction detection error: ${error.message}`);
+        this.logger.error(`❌ Stack trace: ${error.stack}`);
+        return null;
     }
 }
 
