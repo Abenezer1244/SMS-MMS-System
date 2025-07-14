@@ -152,21 +152,29 @@ class WhatsAppStyleReactionSystem {
             iphone: [
                 /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+"(.+)"$/,
                 /^(❤️|👍|👎|😂|‼️|❓)\s+"(.+)"$/,
-                /^Reacted\s+(❤️|👍|👎|😂|‼️|❓)\s+to\s+"(.+)"$/
+                /^Reacted\s+(❤️|👍|👎|😂|‼️|❓)\s+to\s+"(.+)"$/,
+                // 🔥 NEW: Handle your format with "to"
+                /^(❤️|👍|👎|😂|‼️|❓)\s+to\s+"(.+)"$/
             ],
             
             // Android patterns (RCS/SMS)
             android: [
                 /^Reacted\s+(❤️|😂|😮|😢|😠|👍|👎)\s+to\s+"(.+)"$/,
                 /^(❤️|😂|😮|😢|😠|👍|👎)\s+"(.+)"$/,
-                /^Reaction:\s+(❤️|😂|😮|😢|😠|👍|👎)\s+-\s+"(.+)"$/
+                /^Reaction:\s+(❤️|😂|😮|😢|😠|👍|👎)\s+-\s+"(.+)"$/,
+                // 🔥 NEW: Handle your format with "to"
+                /^(❤️|😂|😮|😢|😠|👍|👎)\s+to\s+"(.+)"$/
             ],
             
             // Generic/fallback patterns
             generic: [
                 /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s*(.+)$/,
                 /^Reacted\s+(.+)\s+to\s+"(.+)"$/,
-                /^(.+)\s+reaction:\s+"(.+)"$/
+                /^(.+)\s+reaction:\s+"(.+)"$/,
+                // 🔥 NEW: Handle your specific format
+                /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+to\s+"(.+)"$/,
+                // 🔥 NEW: Handle format with sender name
+                /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+to\s+"([^:]+):\s*(.+)"$/
             ]
         };
 
@@ -263,65 +271,72 @@ class WhatsAppStyleReactionSystem {
         }
     }
 
-    async processReactionMatch(match, deviceType, originalText, senderPhone) {
-        try {
-            let reactionIdentifier, messageQuote;
+async processReactionMatch(match, deviceType, originalText, senderPhone) {
+    try {
+        let reactionIdentifier, messageQuote;
 
-            // Extract reaction and message based on device pattern
-            if (deviceType === 'iphone') {
-                reactionIdentifier = match[1];
-                messageQuote = match[2];
-            } else if (deviceType === 'android') {
-                reactionIdentifier = match[1];
-                messageQuote = match[2];
-            } else { // generic
-                reactionIdentifier = match[1];
-                messageQuote = match[2] || match[1];
+        this.logger.info(`🔧 Processing reaction match: Device=${deviceType}, Match=${JSON.stringify(match)}`);
+
+        // Extract reaction and message based on device pattern
+        if (deviceType === 'iphone' || deviceType === 'android') {
+            reactionIdentifier = match[1];
+            messageQuote = match[2];
+        } else { // generic
+            reactionIdentifier = match[1];
+            messageQuote = match[2] || match[1];
+            
+            // 🔥 NEW: Handle three-group match for "SENDER: message" format
+            if (match[3]) {
+                // Pattern matched "❤️ to "MIKE: Test""
+                // match[1] = ❤️, match[2] = MIKE, match[3] = Test
+                messageQuote = match[3]; // Just the message part
+                this.logger.info(`🔧 Extracted message from sender format: "${messageQuote}"`);
             }
+        }
 
-            if (!messageQuote) {
-                this.logger.warn(`⚠️ No message quote found in reaction: ${originalText}`);
-                return null;
-            }
-
-            // Determine reaction type and emoji
-            const reactionInfo = this.parseReactionType(reactionIdentifier);
-            if (!reactionInfo) {
-                this.logger.warn(`⚠️ Unknown reaction type: ${reactionIdentifier}`);
-                return null;
-            }
-
-            // Find the original message this reaction refers to
-            const originalMessage = await this.findOriginalMessage(messageQuote);
-            if (!originalMessage) {
-                this.logger.warn(`⚠️ Could not find original message for quote: "${messageQuote}"`);
-                return null;
-            }
-
-            // Get reactor information
-            const reactor = await this.smsSystem.getMemberInfo(senderPhone);
-            if (!reactor) {
-                this.logger.warn(`⚠️ Reactor not found: ${senderPhone}`);
-                return null;
-            }
-
-            this.logger.info(`✅ Reaction detected: ${reactor.name} ${reactionInfo.emoji} → "${messageQuote.substring(0, 50)}..."`);
-
-            return {
-                originalMessage,
-                messageQuote,
-                reactionInfo,
-                reactor,
-                deviceType,
-                originalText,
-                confidence: originalMessage.confidence
-            };
-
-        } catch (error) {
-            this.logger.error(`❌ Error processing reaction match: ${error.message}`);
+        if (!messageQuote) {
+            this.logger.warn(`⚠️ No message quote found in reaction: ${originalText}`);
             return null;
         }
+
+        // Determine reaction type and emoji
+        const reactionInfo = this.parseReactionType(reactionIdentifier);
+        if (!reactionInfo) {
+            this.logger.warn(`⚠️ Unknown reaction type: ${reactionIdentifier}`);
+            return null;
+        }
+
+        // Find the original message this reaction refers to
+        const originalMessage = await this.findOriginalMessage(messageQuote);
+        if (!originalMessage) {
+            this.logger.warn(`⚠️ Could not find original message for quote: "${messageQuote}"`);
+            return null;
+        }
+
+        // Get reactor information
+        const reactor = await this.smsSystem.getMemberInfo(senderPhone);
+        if (!reactor) {
+            this.logger.warn(`⚠️ Reactor not found: ${senderPhone}`);
+            return null;
+        }
+
+        this.logger.info(`✅ Reaction detected: ${reactor.name} ${reactionInfo.emoji} → "${messageQuote.substring(0, 50)}..."`);
+
+        return {
+            originalMessage,
+            messageQuote,
+            reactionInfo,
+            reactor,
+            deviceType,
+            originalText,
+            confidence: originalMessage.confidence
+        };
+
+    } catch (error) {
+        this.logger.error(`❌ Error processing reaction match: ${error.message}`);
+        return null;
     }
+}
 
     parseReactionType(identifier) {
         // Check if it's an emoji
@@ -362,71 +377,121 @@ class WhatsAppStyleReactionSystem {
     // SMART MESSAGE MATCHING
     // ========================================================================
 
-    async findOriginalMessage(messageQuote) {
-        try {
-            // Clean the quote for better matching
-            const cleanQuote = this.cleanMessageForMatching(messageQuote);
-            const quoteHash = this.generateMessageHash(cleanQuote);
-
-            this.logger.info(`🔍 Searching for original message: "${cleanQuote}" (hash: ${quoteHash.substring(0, 8)}...)`);
-
-            // Get recent messages (last 7 days)
-            const recentMessages = await this.smsSystem.dbManager.getRecentMessages(7 * 24);
-            
-            if (recentMessages.length === 0) {
-                this.logger.warn('⚠️ No recent messages found for reaction matching');
-                return null;
-            }
-
-            // Try exact hash match first (fastest)
-            for (const message of recentMessages) {
-                const messageHash = this.generateMessageHash(
-                    this.cleanMessageForMatching(message.originalMessage)
-                );
+async findOriginalMessage(messageQuote) {
+    try {
+        // Clean the quote for better matching
+        let cleanQuote = this.cleanMessageForMatching(messageQuote);
+        
+        // 🔥 NEW: Handle sender name format "MIKE: Test" -> "Test"
+        if (cleanQuote.includes(':')) {
+            const parts = cleanQuote.split(':');
+            if (parts.length >= 2) {
+                // Try both full quote and just the message part
+                const messageOnly = parts.slice(1).join(':').trim();
                 
-                if (messageHash === quoteHash) {
-                    this.logger.info(`✅ Exact hash match found for message: ${message._id}`);
-                    return {
-                        message,
-                        matchType: 'exact_match',
-                        confidence: 1.0
-                    };
+                this.logger.info(`🔧 Detected sender format. Full: "${cleanQuote}", Message only: "${messageOnly}"`);
+                
+                // Try to match the message part first
+                const messageOnlyResult = await this.findOriginalMessageByContent(messageOnly);
+                if (messageOnlyResult) {
+                    return messageOnlyResult;
                 }
             }
+        }
+        
+        // Fall back to original matching
+        return await this.findOriginalMessageByContent(cleanQuote);
+        
+    } catch (error) {
+        this.logger.error(`❌ Error finding original message: ${error.message}`);
+        return null;
+    }
+}
 
-            // Try fuzzy matching with similarity scoring
-            let bestMatch = null;
-            let bestScore = 0;
+// NEW HELPER METHOD: Extract message matching logic
+async findOriginalMessageByContent(cleanQuote) {
+    try {
+        const quoteHash = this.generateMessageHash(cleanQuote);
 
-            for (const message of recentMessages) {
-                const cleanMessage = this.cleanMessageForMatching(message.originalMessage);
-                const similarity = this.calculateSimilarity(cleanQuote, cleanMessage);
-                
-                // Consider it a match if similarity > 80%
-                if (similarity > 0.8 && similarity > bestScore) {
-                    bestScore = similarity;
-                    bestMatch = {
-                        message,
-                        matchType: 'fuzzy_match',
-                        confidence: similarity
-                    };
-                }
-            }
+        this.logger.info(`🔍 Searching for original message: "${cleanQuote}" (hash: ${quoteHash.substring(0, 8)}...)`);
 
-            if (bestMatch) {
-                this.logger.info(`✅ Fuzzy match found with ${(bestMatch.confidence * 100).toFixed(1)}% confidence`);
-                return bestMatch;
-            }
-
-            this.logger.warn(`⚠️ No matching message found for: "${cleanQuote}"`);
-            return null;
-
-        } catch (error) {
-            this.logger.error(`❌ Error finding original message: ${error.message}`);
+        // Get recent messages (last 7 days)
+        const recentMessages = await this.smsSystem.dbManager.getRecentMessages(7 * 24);
+        
+        if (recentMessages.length === 0) {
+            this.logger.warn('⚠️ No recent messages found for reaction matching');
             return null;
         }
-    }
 
+        // Try exact hash match first (fastest)
+        for (const message of recentMessages) {
+            const messageHash = this.generateMessageHash(
+                this.cleanMessageForMatching(message.originalMessage)
+            );
+            
+            if (messageHash === quoteHash) {
+                this.logger.info(`✅ Exact hash match found for message: ${message._id}`);
+                return {
+                    message,
+                    matchType: 'exact_match',
+                    confidence: 1.0
+                };
+            }
+        }
+
+        // Try fuzzy matching with similarity scoring
+        let bestMatch = null;
+        let bestScore = 0;
+
+        for (const message of recentMessages) {
+            const cleanMessage = this.cleanMessageForMatching(message.originalMessage);
+            const similarity = this.calculateSimilarity(cleanQuote, cleanMessage);
+            
+            // Consider it a match if similarity > 70% (lowered threshold)
+            if (similarity > 0.7 && similarity > bestScore) {
+                bestScore = similarity;
+                bestMatch = {
+                    message,
+                    matchType: 'fuzzy_match',
+                    confidence: similarity
+                };
+            }
+        }
+
+        if (bestMatch) {
+            this.logger.info(`✅ Fuzzy match found with ${(bestMatch.confidence * 100).toFixed(1)}% confidence`);
+            return bestMatch;
+        }
+
+        // Try keyword matching for very short quotes
+        if (cleanQuote.length < 50) {
+            const keywords = cleanQuote.split(' ').filter(word => word.length > 2);
+            
+            for (const message of recentMessages) {
+                const cleanMessage = this.cleanMessageForMatching(message.originalMessage);
+                const keywordMatches = keywords.filter(keyword => 
+                    cleanMessage.toLowerCase().includes(keyword.toLowerCase())
+                );
+                
+                if (keywordMatches.length >= Math.min(keywords.length, 2) && keywords.length > 0) {
+                    this.logger.info(`✅ Keyword match found: ${keywordMatches.join(', ')}`);
+                    return {
+                        message,
+                        matchType: 'keyword_match',
+                        confidence: 0.6
+                    };
+                }
+            }
+        }
+
+        this.logger.warn(`⚠️ No matching message found for: "${cleanQuote}"`);
+        return null;
+
+    } catch (error) {
+        this.logger.error(`❌ Error in message matching: ${error.message}`);
+        return null;
+    }
+}
     cleanMessageForMatching(message) {
         return message
             .replace(/[\n\r\t]/g, ' ')  // Replace line breaks with spaces
