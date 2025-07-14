@@ -2346,116 +2346,43 @@ async generateHelpMessage(member) {
     const startTime = Date.now();
     
     try {
-        // Get system statistics for help message
         const stats = await this.dbManager.getHealthStats();
-        const currentTime = new Date().toLocaleString();
         
-        // Base help message for all members
-        let helpMessage = `📋 YESUWAY CHURCH SMS SYSTEM
-═══════════════════════════════════
+        // 🎯 COMMANDS-ONLY HELP (Under 800 characters)
+        let helpMessage = `📋 YESUWAY CHURCH COMMANDS
+═══════════════════════════════
 
-🏛️ CHURCH COMMUNICATION PLATFORM
-📅 Current Time: ${currentTime}
-👥 Active Members: ${stats.activeMemberCount}
-📱 Church Number: ${config.twilio.phoneNumber}
+👥 ${stats.activeMemberCount} members • ${config.twilio.phoneNumber}
 
-📱 FOR ALL MEMBERS:
-═══════════════════════════════════
-✅ Send messages to entire congregation
-✅ Share photos/videos (unlimited size)
-✅ Send prayer requests and announcements
-✅ Share testimonies and encouragement
-✅ Ask for help or volunteers
+💬 BASIC USAGE:
+• Text anything → broadcasts to everyone
+• Share photos/videos freely
+• React: ❤️😂👍🙏 (processed silently)
 
-💬 HOW TO USE:
-• Text anything to broadcast to everyone
-• Share photos from church events
-• Send prayer requests for immediate support
-• Post announcements and reminders
-• Express reactions (tracked in summaries)
-
-📝 EXAMPLES:
-• "Prayer meeting tonight at 7 PM!"
-• "Thank you for the wonderful service!"
-• "Does anyone have a truck I could borrow?"
-• [Send photos from church events]
-
-🔇 REACTIONS:
-Your thumbs up, hearts, etc. are tracked
-silently and appear in daily summaries.
-
-🏛️ SYSTEM INFO:
-• Production system - serving 24/7
-• MongoDB database - enterprise grade
-• Clean media links - professional presentation
-• Secure registration - members only
-
-📋 AVAILABLE COMMANDS:
-═══════════════════════════════════
-• HELP - Show this information`;
-
-
+📱 AVAILABLE COMMANDS:
+• HELP - Show this message`;
 
         // Add admin commands if user is admin
         if (member.isAdmin) {
             helpMessage += `
 
 🔑 ADMIN COMMANDS:
-═══════════════════════════════════
-• ADD +1234567890 MemberName
-  └─ Add new member (sends welcome SMS)
-  
-• REMOVE +1234567890 [MemberName]  
-  └─ Permanently delete member
-  
-• ADMIN +1234567890 AdminName
-  └─ Grant full admin privileges
-  
-• WIPE CONFIRM
-  └─ Emergency complete database wipe
-  
-• CLEANUP STATUS
-  └─ Show database health status
-  
-• CLEANUP DUPLICATES
-  └─ Remove duplicate phone numbers
-  
-• CLEANUP PHONE +1234567890
-  └─ Remove all data for phone number
-  
-• CLEANUP ORPHANED
-  └─ Remove inactive members & orphaned data
-
-📊 ADMIN EXAMPLES:
-• ADD +12065551234 John Smith
-• REMOVE +12065551234 John Smith
-• ADMIN +12065551234 Jane Doe
-• WIPE CONFIRM
-• CLEANUP STATUS
-• CLEANUP DUPLICATES
-
-⚠️ ADMIN NOTES:
-• All admin commands are permanently logged
-• REMOVE permanently deletes all member data
-• ADMIN grants full system privileges
-• WIPE destroys ALL database content
-• CLEANUP operations cannot be undone
-• New members receive automatic welcome SMS
-• New admins receive privilege notification SMS`;
+• REACTIONS STATS - View reaction analytics
+• REACTIONS SUMMARY - Force generate summary
+• REACTIONS RECENT - View recent reactions
+• ADD +1234567890 Name - Add new member
+• REMOVE +1234567890 Name - Remove member
+• ADMIN +1234567890 Name - Grant admin access
+• DEMOTE +1234567890 Name - Remove admin access
+• CLEANUP STATUS - Database health check
+• WIPE CONFIRM - Emergency database reset`;
         }
 
-        // Add footer
         helpMessage += `
 
-🙏 CHURCH FELLOWSHIP:
-═══════════════════════════════════
-"Let us consider how we may spur one another 
-on toward love and good deeds." - Hebrews 10:24
+💚 YesuWay Church • Professional SMS System`;
 
-💚 SERVING YOUR CONGREGATION 24/7
-🏛️ Professional Church Communication System`;
-
-        // Record help command usage
+        // Record usage and log character count
         await this.dbManager.recordAnalytic('help_command_used', 1, 
             `User: ${member.name} (${member.isAdmin ? 'Admin' : 'Member'})`);
 
@@ -2463,6 +2390,7 @@ on toward love and good deeds." - Hebrews 10:24
         await this.recordPerformanceMetric('help_command', durationMs, true);
 
         logger.info(`📋 HELP command used by ${member.name} (Admin: ${member.isAdmin})`);
+        logger.info(`📏 Help message length: ${helpMessage.length} characters`);
 
         return helpMessage;
 
@@ -2472,33 +2400,78 @@ on toward love and good deeds." - Hebrews 10:24
         
         logger.error(`❌ HELP command error: ${error.message}`);
         
-        // Fallback help message if database fails
-        let fallbackMessage = `📋 YESUWAY CHURCH SMS SYSTEM
+        // Ultra-minimal fallback
+        return `📋 YESUWAY CHURCH
 
-💬 BASIC USAGE:
-• Text anything to broadcast to congregation
-• Share photos and prayer requests
-• Send announcements and updates
+📱 Commands: HELP, REACTIONS STATS
+💬 Text anything to broadcast
+🔇 React with ❤️😂👍🙏
 
-📱 Church Number: ${config.twilio.phoneNumber}`;
-
-        if (member.isAdmin) {
-            fallbackMessage += `
-
-🔑 ADMIN COMMANDS:
-• ADD +1234567890 MemberName
-• REMOVE +1234567890 MemberName
-• ADMIN +1234567890 AdminName
-• WIPE CONFIRM
-• CLEANUP STATUS`;
-        }
-
-        fallbackMessage += `
-
-💚 Professional Church Communication System`;
-
-        return fallbackMessage;
+💚 YesuWay Church`;
     }
+}
+
+// ============================================================================
+// ALTERNATIVE: EVEN MORE MINIMAL VERSION
+// ============================================================================
+
+async generateMinimalHelp(member) {
+    let help = `📋 COMMANDS
+
+📱 BASIC:
+• Text anything → broadcast to all
+• React: ❤️😂👍🙏 (silent processing)`;
+
+    if (member.isAdmin) {
+        help += `
+
+🔑 ADMIN:
+• REACTIONS STATS
+• REACTIONS SUMMARY  
+• ADD +phone Name
+• REMOVE +phone Name
+• CLEANUP STATUS`;
+    }
+
+    help += `
+
+💚 YesuWay Church`;
+
+    logger.info(`📏 Minimal help: ${help.length} characters`);
+    return help;
+}
+
+// ============================================================================
+// SUPER MINIMAL: JUST COMMANDS
+// ============================================================================
+
+async generateCommandsOnly(member) {
+    let commands = `📋 AVAILABLE COMMANDS
+
+💬 HELP - Show commands`;
+
+    if (member.isAdmin) {
+        commands += `
+🔑 REACTIONS STATS - Analytics
+🔑 REACTIONS SUMMARY - Force summary
+🔑 REACTIONS RECENT - Recent activity
+🔑 ADD +phone Name - Add member
+🔑 REMOVE +phone Name - Remove member
+🔑 ADMIN +phone Name - Grant admin
+🔑 DEMOTE +phone Name - Remove admin
+🔑 CLEANUP STATUS - Database health
+🔑 WIPE CONFIRM - Emergency reset`;
+    }
+
+    commands += `
+
+Text anything else to broadcast to congregation.
+React with ❤️😂👍🙏 for silent reactions.
+
+YesuWay Church`;
+
+    logger.info(`📏 Commands only: ${commands.length} characters`);
+    return commands;
 }
 
 // Optional: Add a detailed admin help command
