@@ -564,10 +564,11 @@ class ProductionChurchSMS {
             
             return { cleanFilename, displayName };
         }
+// FIXED MEDIA PROCESSING METHODS FOR app.js
+// Replace the existing processMediaFiles method and related broken methods with this working version
 
-// 3. REPLACE your existing processMediaFiles method with this enhanced version
 async processMediaFiles(messageId, mediaUrls) {
-    logger.info(`🔄 Processing ${mediaUrls.length} media files with Cloudflare Stream integration for message ${messageId}`);
+    logger.info(`🔄 Processing ${mediaUrls.length} media files for message ${messageId}`);
 
     const processedLinks = [];
     const processingErrors = [];
@@ -580,6 +581,7 @@ async processMediaFiles(messageId, mediaUrls) {
         try {
             logger.info(`📎 Processing media ${i + 1}/${mediaUrls.length}: ${mediaType}`);
 
+            // Download from Twilio
             const mediaData = await this.downloadMediaFromTwilio(mediaUrl);
 
             if (!mediaData) {
@@ -589,94 +591,79 @@ async processMediaFiles(messageId, mediaUrls) {
                 continue;
             }
 
-            let processedContent = mediaData.content;
-            let finalMimeType = mediaData.mimeType;
-            let qualityInfo = 'original';
-            let isStreamOptimized = false;
+            // Generate clean filename and display name
+            const { cleanFilename, displayName } = this.generateCleanFilename(mediaData.mimeType, i + 1);
 
-            // 🎥 CLOUDFLARE STREAM PROCESSING FOR VIDEOS
-            if (mediaData.mimeType.includes('video') && process.env.CLOUDFLARE_STREAM_ENABLED === 'true') {
-                logger.info(`🎥 Video detected (${(mediaData.size / 1024 / 1024).toFixed(2)}MB), processing with Cloudflare Stream...`);
-                
-                const streamResult = await this.processVideoWithCloudflareStream(mediaData, i + 1);
-                if (streamResult.success) {
-                    processedContent = streamResult.content;
-                    finalMimeType = streamResult.mimeType;
-                    qualityInfo = streamResult.qualityInfo;
-                    isStreamOptimized = true;
-                    logger.info(`✅ Video ${i + 1} processed with Cloudflare Stream: ${streamResult.qualityInfo}`);
-                } else {
-                    logger.warn(`⚠️ Cloudflare Stream processing failed for video ${i + 1}, using original: ${streamResult.error}`);
-                    // Continue with original video processing
+            // Upload to R2 with proper error handling
+            let publicUrl = null;
+            
+            if (this.r2Client) {
+                try {
+                    publicUrl = await this.uploadToR2(
+                        mediaData.content,
+                        cleanFilename,
+                        mediaData.mimeType,
+                        {
+                            'original-size': mediaData.size.toString(),
+                            'media-index': i.toString(),
+                            'display-name': displayName,
+                            'church-system': 'yesuway-production'
+                        }
+                    );
+                } catch (r2Error) {
+                    logger.error(`❌ R2 upload failed for media ${i + 1}: ${r2Error.message}`);
+                    // Continue processing - we'll create a fallback
                 }
             }
 
-            
-
-            // Enhanced filename generation for stream-optimized content
-            const { cleanFilename, displayName } = this.generateCleanFilename(finalMimeType, i + 1);
-
-            const publicUrl = await this.uploadToR2(
-                processedContent,
-                cleanFilename,
-                finalMimeType,
-                {
-                    'original-size': mediaData.size.toString(),
-                    'final-size': processedContent.length.toString(),
-                    'quality-info': qualityInfo,
-                    'stream-optimized': isStreamOptimized.toString(),
-                    'media-index': i.toString(),
-                    'display-name': displayName,
-                    'processing-timestamp': new Date().toISOString(),
-                    'church-system': 'yesuway-production-stream'
+            // Fallback for development or R2 failure
+            if (!publicUrl) {
+                if (config.development) {
+                    publicUrl = `https://example.com/media/dev_${Date.now()}_${i + 1}`;
+                    logger.info(`🛠️ Development mode: Generated mock URL for media ${i + 1}`);
+                } else {
+                    // Production fallback - try alternative upload or create direct link
+                    publicUrl = await this.createFallbackMediaUrl(mediaData, cleanFilename, displayName);
                 }
-            );
+            }
 
             if (publicUrl) {
-                // Enhanced database storage with stream information
+                // Store in database
                 if (this.dbManager.isConnected) {
-                    await this.dbManager.createMediaFile({
-                        messageId: messageId,
-                        originalUrl: mediaUrl,
-                        r2ObjectKey: cleanFilename,
-                        publicUrl: publicUrl,
-                        cleanFilename: cleanFilename.split('/').pop(),
-                        displayName: displayName,
-                        originalSize: mediaData.size,
-                        finalSize: processedContent.length,
-                        mimeType: finalMimeType,
-                        fileHash: mediaData.hash,
-                        compressionDetected: isStreamOptimized, // True if we used Cloudflare Stream
-                        uploadStatus: 'completed',
-                        qualityInfo: qualityInfo,
-                        streamOptimized: isStreamOptimized,
-                        processingMetadata: {
-                            cloudflareStreamEnabled: process.env.CLOUDFLARE_STREAM_ENABLED === 'true',
-                            originalMimeType: mediaData.mimeType,
-                            qualityPreservation: isStreamOptimized,
-                            processingTimestamp: new Date()
-                        }
-                    });
+                    try {
+                        await this.dbManager.createMediaFile({
+                            messageId: messageId,
+                            originalUrl: mediaUrl,
+                            r2ObjectKey: cleanFilename,
+                            publicUrl: publicUrl,
+                            cleanFilename: cleanFilename.split('/').pop(),
+                            displayName: displayName,
+                            originalSize: mediaData.size,
+                            finalSize: mediaData.content.length,
+                            mimeType: mediaData.mimeType,
+                            fileHash: mediaData.hash,
+                            compressionDetected: false,
+                            uploadStatus: 'completed'
+                        });
+                    } catch (dbError) {
+                        logger.warn(`⚠️ Failed to store media file in database: ${dbError.message}`);
+                        // Continue anyway - the URL still works
+                    }
                 }
 
                 processedLinks.push({
                     url: publicUrl,
                     displayName: displayName,
-                    type: finalMimeType,
-                    qualityInfo: qualityInfo,
-                    streamOptimized: isStreamOptimized
+                    type: mediaData.mimeType
                 });
                 
-                if (isStreamOptimized) {
-                    logger.info(`✅ Video ${i + 1} processed with Cloudflare Stream and uploaded successfully`);
-                } else {
-                    logger.info(`✅ Media ${i + 1} processed successfully (original quality)`);
-                }
+                logger.info(`✅ Media ${i + 1} processed successfully: ${displayName}`);
             } else {
-                const errorMsg = `Failed to upload media ${i + 1} to R2`;
+                const errorMsg = `Failed to create accessible URL for media ${i + 1}`;
                 processingErrors.push(errorMsg);
                 logger.error(errorMsg);
             }
+
         } catch (error) {
             const errorMsg = `Error processing media ${i + 1}: ${error.message}`;
             processingErrors.push(errorMsg);
@@ -684,19 +671,73 @@ async processMediaFiles(messageId, mediaUrls) {
         }
     }
 
-    // Enhanced completion logging
-    const streamProcessedCount = processedLinks.filter(link => link.streamOptimized).length;
-    const originalProcessedCount = processedLinks.filter(link => !link.streamOptimized).length;
-    
-    logger.info(`✅ Media processing complete: ${processedLinks.length} successful (${streamProcessedCount} Cloudflare Stream, ${originalProcessedCount} original), ${processingErrors.length} errors`);
-    
-    // Record analytics for stream usage
-    if (this.dbManager.isConnected && streamProcessedCount > 0) {
-        await this.dbManager.recordAnalytic('cloudflare_stream_usage', streamProcessedCount, 
-            `Total videos processed: ${streamProcessedCount}, Total media items: ${processedLinks.length}`);
-    }
-    
+    logger.info(`✅ Media processing complete: ${processedLinks.length} successful, ${processingErrors.length} errors`);
     return { processedLinks, processingErrors };
+}
+
+// NEW METHOD: Fallback media URL creation for when R2 fails
+async createFallbackMediaUrl(mediaData, cleanFilename, displayName) {
+    try {
+        // Option 1: Try to use Twilio's direct URL (temporary but works)
+        if (mediaData.originalUrl && mediaData.originalUrl.includes('twilio.com')) {
+            logger.info(`📎 Using Twilio direct URL as fallback for ${displayName}`);
+            return mediaData.originalUrl;
+        }
+
+        // Option 2: Create a base64 data URL for small files (< 1MB)
+        if (mediaData.content.length < 1024 * 1024) {
+            const base64Content = mediaData.content.toString('base64');
+            const dataUrl = `data:${mediaData.mimeType};base64,${base64Content}`;
+            logger.info(`📎 Created base64 data URL for small ${displayName}`);
+            return dataUrl;
+        }
+
+        // Option 3: Store locally and serve via Express (development)
+        if (config.development) {
+            const localPath = await this.saveMediaLocally(mediaData, cleanFilename);
+            if (localPath) {
+                const localUrl = `http://localhost:${config.port}/media/${cleanFilename.split('/').pop()}`;
+                logger.info(`📎 Created local URL for ${displayName}: ${localUrl}`);
+                return localUrl;
+            }
+        }
+
+        logger.error(`❌ All fallback options failed for ${displayName}`);
+        return null;
+
+    } catch (error) {
+        logger.error(`❌ Fallback URL creation failed: ${error.message}`);
+        return null;
+    }
+}
+
+// NEW METHOD: Save media locally for development/fallback
+async saveMediaLocally(mediaData, cleanFilename) {
+    try {
+        const fs = require('fs').promises;
+        const path = require('path');
+
+        // Create local media directory
+        const mediaDir = path.join(process.cwd(), 'temp_media');
+        try {
+            await fs.mkdir(mediaDir, { recursive: true });
+        } catch (mkdirError) {
+            // Directory might already exist
+        }
+
+        // Save file locally
+        const localFilename = cleanFilename.split('/').pop();
+        const localPath = path.join(mediaDir, localFilename);
+        
+        await fs.writeFile(localPath, mediaData.content);
+        logger.info(`💾 Saved media locally: ${localPath}`);
+        
+        return localPath;
+
+    } catch (error) {
+        logger.error(`❌ Local media save failed: ${error.message}`);
+        return null;
+    }
 }
 
 
@@ -794,6 +835,7 @@ async processMediaFiles(messageId, mediaUrls) {
         }
     }
 
+    // FIXED: Simplified broadcast message method
     async broadcastMessage(fromPhone, messageText, mediaUrls = null) {
         const startTime = Date.now();
         logger.info(`📡 Starting broadcast from ${fromPhone}`);
@@ -823,6 +865,7 @@ async processMediaFiles(messageId, mediaUrls) {
                 }
             }
 
+            // Store broadcast message in database
             if (this.dbManager.isConnected) {
                 try {
                     const broadcastMessage = await this.dbManager.createBroadcastMessage({
@@ -845,36 +888,34 @@ async processMediaFiles(messageId, mediaUrls) {
             }
 
             let cleanMediaLinks = [];
-            let largeMediaCount = 0;
+            let mediaProcessingErrors = [];
 
+            // Process media files if present
             if (mediaUrls && mediaUrls.length > 0) {
-                logger.info(`🔄 Processing ${mediaUrls.length} media files with quality preservation...`);
+                logger.info(`🔄 Processing ${mediaUrls.length} media files...`);
                 try {
-                    const { processedLinks, processingErrors } = await this.processMediaFilesWithQualityPreservation(messageId, mediaUrls);
+                    const { processedLinks, processingErrors } = await this.processMediaFiles(messageId, mediaUrls);
                     cleanMediaLinks = processedLinks;
-                    largeMediaCount = processedLinks.length;
+                    mediaProcessingErrors = processingErrors;
 
                     if (processingErrors.length > 0) {
                         logger.warn(`⚠️ Media processing errors: ${processingErrors.join(', ')}`);
                     }
                 } catch (mediaError) {
-                    logger.error(`❌ Quality-preserved media processing failed: ${mediaError.message}`);
-                    // Fallback to original processing
-                    const { processedLinks, processingErrors } = await this.processMediaFiles(messageId, mediaUrls);
-                    cleanMediaLinks = processedLinks;
-                    largeMediaCount = processedLinks.length;
+                    logger.error(`❌ Media processing failed: ${mediaError.message}`);
+                    mediaProcessingErrors.push(`Media processing system error: ${mediaError.message}`);
                 }
             }
 
-            const finalMessage = this.formatMessageWithMedia(
-                messageText, sender, cleanMediaLinks
-            );
+            // Format final message
+            const finalMessage = this.formatMessageWithMedia(messageText, sender, cleanMediaLinks);
 
+            // Update database with final message
             if (this.dbManager.isConnected && messageId) {
                 try {
                     await this.dbManager.updateBroadcastMessage(messageId, {
                         processedMessage: finalMessage,
-                        largeMediaCount: largeMediaCount,
+                        largeMediaCount: cleanMediaLinks.length,
                         processingStatus: 'completed'
                     });
                 } catch (updateError) {
@@ -882,6 +923,7 @@ async processMediaFiles(messageId, mediaUrls) {
                 }
             }
 
+            // Send to all recipients
             const deliveryStats = {
                 sent: 0,
                 failed: 0,
@@ -895,6 +937,7 @@ async processMediaFiles(messageId, mediaUrls) {
                     const result = await this.sendSMS(member.phone, finalMessage);
                     const deliveryTime = Date.now() - memberStart;
 
+                    // Log delivery
                     if (this.dbManager.isConnected && messageId) {
                         try {
                             await this.dbManager.createDeliveryLog({
@@ -933,6 +976,7 @@ async processMediaFiles(messageId, mediaUrls) {
             const totalTime = (Date.now() - startTime) / 1000;
             deliveryStats.totalTime = totalTime;
 
+            // Update final status
             if (this.dbManager.isConnected && messageId) {
                 try {
                     await this.dbManager.updateBroadcastMessage(messageId, {
@@ -949,17 +993,19 @@ async processMediaFiles(messageId, mediaUrls) {
                 }
             }
 
-            const broadcastDurationMs = Math.round(totalTime * 1000);
-            await this.recordPerformanceMetric('broadcast_complete', broadcastDurationMs, true);
-
             logger.info(`📊 Broadcast completed in ${totalTime.toFixed(2)}s: ${deliveryStats.sent} sent, ${deliveryStats.failed} failed`);
 
+            // Return confirmation to admin
             if (sender.isAdmin) {
                 let confirmation = `✅ Broadcast completed in ${totalTime.toFixed(1)}s\n`;
                 confirmation += `📊 Delivered: ${deliveryStats.sent}/${recipients.length}\n`;
 
-                if (largeMediaCount > 0) {
-                    confirmation += `📎 Clean media links: ${largeMediaCount}\n`;
+                if (cleanMediaLinks.length > 0) {
+                    confirmation += `📎 Media files: ${cleanMediaLinks.length} processed\n`;
+                }
+
+                if (mediaProcessingErrors.length > 0) {
+                    confirmation += `⚠️ Media errors: ${mediaProcessingErrors.length}\n`;
                 }
 
                 if (deliveryStats.failed > 0) {
@@ -988,7 +1034,6 @@ async processMediaFiles(messageId, mediaUrls) {
             return "Broadcast failed - system administrators notified";
         }
     }
-
     async isAdmin(phoneNumber) {
         try {
             phoneNumber = this.cleanPhoneNumber(phoneNumber);
@@ -1000,16 +1045,7 @@ async processMediaFiles(messageId, mediaUrls) {
         }
     }
 
-    // Add this method to the ProductionChurchSMS class in app.js
 
-// Enhanced ProductionChurchSMS class methods with ADD and REMOVE commands
-// Add these methods to your ProductionChurchSMS class in app.js
-
-// Enhanced handleAddMemberCommand method for app.js
-// Replace the existing method in your ProductionChurchSMS class
-
-// Enhanced handleAddMemberCommand method for app.js
-// Replace the existing method in your ProductionChurchSMS class
 
 async handleAddMemberCommand(adminPhone, commandText) {
     const startTime = Date.now();
@@ -2344,117 +2380,6 @@ async handleAdminCommand(adminPhone, commandText) {
 
 
 
-
-// AWS ELEMENTAL MEDIACONVERT INTEGRATION
-async processVideoWithMediaConvert(mediaData, mediaIndex) {
-    const startTime = Date.now();
-    
-    try {
-        logger.info(`🎥 Processing video ${mediaIndex} with AWS MediaConvert`);
-        
-        const AWS = require('aws-sdk');
-        const mediaConvert = new AWS.MediaConvert({
-            region: process.env.AWS_REGION || 'us-east-1',
-            endpoint: process.env.AWS_MEDIACONVERT_ENDPOINT
-        });
-        
-        // First, upload original video to S3
-        const s3Key = `church/videos/original_${mediaIndex}_${Date.now()}.mp4`;
-        const s3Url = await this.uploadToS3(mediaData.content, s3Key, mediaData.mimeType);
-        
-        // Create MediaConvert job for optimization
-        const jobParams = {
-            Role: process.env.AWS_MEDIACONVERT_ROLE,
-            Settings: {
-                Inputs: [{
-                    FileInput: s3Url,
-                    VideoSelector: {},
-                    AudioSelectors: {
-                        'Audio Selector 1': {
-                            DefaultSelection: 'DEFAULT'
-                        }
-                    }
-                }],
-                OutputGroups: [{
-                    Name: 'Church Video Optimized',
-                    OutputGroupSettings: {
-                        Type: 'FILE_GROUP_SETTINGS',
-                        FileGroupSettings: {
-                            Destination: `s3://${process.env.AWS_S3_BUCKET}/church/videos/optimized/`
-                        }
-                    },
-                    Outputs: [{
-                        NameModifier: `_optimized_${mediaIndex}`,
-                        VideoDescription: {
-                            CodecSettings: {
-                                Codec: 'H_264',
-                                H264Settings: {
-                                    RateControlMode: 'QVBR',
-                                    QvbrSettings: {
-                                        QvbrQualityLevel: 8 // High quality
-                                    },
-                                    MaxBitrate: 5000000, // 5 Mbps max
-                                    FramerateControl: 'SPECIFIED',
-                                    FramerateNumerator: 30,
-                                    FramerateDenominator: 1
-                                }
-                            },
-                            Width: 1920,
-                            Height: 1080
-                        },
-                        AudioDescriptions: [{
-                            CodecSettings: {
-                                Codec: 'AAC',
-                                AacSettings: {
-                                    Bitrate: 128000,
-                                    SampleRate: 48000
-                                }
-                            }
-                        }],
-                        ContainerSettings: {
-                            Container: 'MP4'
-                        }
-                    }]
-                }]
-            }
-        };
-        
-        const job = await mediaConvert.createJob(jobParams).promise();
-        const jobId = job.Job.Id;
-        
-        // Wait for job completion (with timeout)
-        const optimizedUrl = await this.waitForMediaConvertJob(jobId, 300000); // 5 min timeout
-        
-        // Download optimized video
-        const optimizedContent = await this.downloadFromS3(optimizedUrl);
-        
-        const durationMs = Date.now() - startTime;
-        await this.recordPerformanceMetric('mediaconvert_processing', durationMs, true);
-        
-        logger.info(`✅ Video ${mediaIndex} optimized with MediaConvert`);
-        
-        return {
-            success: true,
-            content: optimizedContent,
-            mimeType: 'video/mp4',
-            qualityInfo: `mediaconvert_optimized_${Math.round(optimizedContent.length / (1024 * 1024))}MB`
-        };
-        
-    } catch (error) {
-        const durationMs = Date.now() - startTime;
-        await this.recordPerformanceMetric('mediaconvert_processing', durationMs, false, error.message);
-        
-        logger.error(`❌ MediaConvert processing failed: ${error.message}`);
-        return {
-            success: false,
-            error: error.message
-        };
-    }
-}
-
-
-
-
 // ✨ NEW METHOD: Send admin promotion SMS
 async sendAdminPromotionSMS(adminPhone, adminName, promoterName) {
     const startTime = Date.now();
@@ -3532,7 +3457,97 @@ app.get('/analytics', async (req, res) => {
     }
 });
 
+// ADD THESE ROUTES TO YOUR EXPRESS APP IN app.js (after existing routes, before error handlers)
 
+// Serve local media files (fallback when R2 is unavailable)
+app.get('/media/:filename', async (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const path = require('path');
+        const fs = require('fs').promises;
+        
+        // Security: prevent directory traversal
+        if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+            return res.status(400).json({ error: 'Invalid filename' });
+        }
+        
+        const mediaDir = path.join(process.cwd(), 'temp_media');
+        const filePath = path.join(mediaDir, filename);
+        
+        try {
+            // Check if file exists
+            await fs.access(filePath);
+            
+            // Get file stats and mime type
+            const stats = await fs.stat(filePath);
+            const mimeType = require('mime-types').lookup(filename) || 'application/octet-stream';
+            
+            // Set appropriate headers
+            res.setHeader('Content-Type', mimeType);
+            res.setHeader('Content-Length', stats.size);
+            res.setHeader('Cache-Control', 'public, max-age=86400'); // 24 hours
+            res.setHeader('Content-Disposition', 'inline');
+            
+            // Stream the file
+            const fileStream = require('fs').createReadStream(filePath);
+            fileStream.pipe(res);
+            
+            logger.info(`📎 Served local media file: ${filename} (${stats.size} bytes)`);
+            
+        } catch (fileError) {
+            logger.warn(`❌ Media file not found: ${filename}`);
+            res.status(404).json({ 
+                error: 'Media file not found',
+                filename: filename,
+                suggestion: 'File may have been moved or deleted'
+            });
+        }
+        
+    } catch (error) {
+        logger.error(`❌ Error serving media file: ${error.message}`);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Media file info endpoint (for debugging)
+app.get('/media-info/:filename', async (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const path = require('path');
+        const fs = require('fs').promises;
+        
+        if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+            return res.status(400).json({ error: 'Invalid filename' });
+        }
+        
+        const mediaDir = path.join(process.cwd(), 'temp_media');
+        const filePath = path.join(mediaDir, filename);
+        
+        try {
+            const stats = await fs.stat(filePath);
+            const mimeType = require('mime-types').lookup(filename) || 'application/octet-stream';
+            
+            res.json({
+                filename: filename,
+                size: stats.size,
+                mimeType: mimeType,
+                created: stats.birthtime,
+                modified: stats.mtime,
+                accessible: true
+            });
+            
+        } catch (fileError) {
+            res.status(404).json({
+                filename: filename,
+                accessible: false,
+                error: 'File not found'
+            });
+        }
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 
 // Error handlers
 app.use((req, res) => {
