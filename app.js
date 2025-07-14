@@ -574,60 +574,94 @@ async storeReaction(reactionData) {
             confidence
         } = reactionData;
 
-        // 🔥 FIX: Use the correct phone field from member object
-        // 🔥 In your storeReaction method:
-        const reactorPhone = reactor.phoneNumber || reactor.phone || 'unknown';
+        // 🔥 FORCE-FIX: Handle ALL possible phone field variations
+        let reactorPhone = 'unknown';
         
-        this.logger.info(`🔧 DEBUG: Reactor object: ${JSON.stringify(reactor)}`);
-        this.logger.info(`🔧 DEBUG: Using reactorPhone: ${reactorPhone}`);
-
-        // Check for duplicate reactions
-        const existingReaction = await MessageReaction.findOne({
-            originalMessageId: originalMessage.message._id,
-            reactorPhone: reactorPhone,
-            reactionType: reactionInfo.type
-        });
-
-        if (existingReaction) {
-            this.logger.info(`ℹ️ Duplicate reaction ignored: ${reactor.name} already ${reactionInfo.name}d this message`);
-            return null;
+        if (reactor.phoneNumber) {
+            reactorPhone = reactor.phoneNumber;
+        } else if (reactor.phone) {
+            reactorPhone = reactor.phone;
+        } else if (typeof reactor === 'string') {
+            reactorPhone = reactor;
+        } else {
+            // Last resort: extract from any field that looks like a phone
+            for (const [key, value] of Object.entries(reactor)) {
+                if (typeof value === 'string' && (value.startsWith('+') || /^\d{10,}$/.test(value))) {
+                    reactorPhone = value;
+                    break;
+                }
+            }
         }
 
-        // Create reaction record with correct phone field
-        const reaction = new MessageReaction({
+        this.logger.info(`🔧 REACTOR DEBUG: ${JSON.stringify(reactor)}`);
+        this.logger.info(`🔧 USING PHONE: ${reactorPhone}`);
+
+        // Clean the phone number
+        if (reactorPhone !== 'unknown') {
+            reactorPhone = this.smsSystem.cleanPhoneNumber(reactorPhone);
+        }
+
+        // Check for duplicate reactions (optional - won't fail if this doesn't work)
+        try {
+            const existingReaction = await MessageReaction.findOne({
+                originalMessageId: originalMessage.message._id,
+                reactorPhone: reactorPhone,
+                reactionType: reactionInfo.type
+            });
+
+            if (existingReaction) {
+                this.logger.info(`ℹ️ Duplicate reaction ignored: ${reactor.name} already ${reactionInfo.name}d this message`);
+                return null;
+            }
+        } catch (duplicateError) {
+            this.logger.warn(`⚠️ Could not check for duplicates: ${duplicateError.message}`);
+        }
+
+        // Create reaction record with MAXIMUM error tolerance
+        const reactionDoc = {
             originalMessageId: originalMessage.message._id,
-            originalMessageText: originalMessage.message.originalMessage,
+            originalMessageText: originalMessage.message.originalMessage || 'unknown',
             originalMessageHash: this.generateMessageHash(
-                this.cleanMessageForMatching(originalMessage.message.originalMessage)
+                this.cleanMessageForMatching(originalMessage.message.originalMessage || 'unknown')
             ),
-            reactorPhone: reactorPhone, // 🔥 FIX: Use the correct variable
-            reactorName: reactor.name,
+            reactorPhone: reactorPhone,
+            reactorName: reactor.name || 'Unknown',
             reactionType: reactionInfo.type,
             reactionEmoji: reactionInfo.emoji,
             originalReactionText: originalText,
-            deviceType: deviceType,
-            processingMethod: originalMessage.matchType,
+            deviceType: deviceType || 'generic',
+            processingMethod: originalMessage.matchType || 'unknown',
             confidence: confidence || 1.0,
             isProcessed: false,
             includedInSummary: false
-        });
+        };
 
+        this.logger.info(`🔧 CREATING REACTION DOC: ${JSON.stringify(reactionDoc)}`);
+
+        const reaction = new MessageReaction(reactionDoc);
         await reaction.save();
 
-        this.logger.info(`✅ Reaction stored successfully: ${reactor.name} ${reactionInfo.emoji} → Message ${originalMessage.message._id}`);
+        this.logger.info(`✅ REACTION STORED SUCCESSFULLY: ${reactor.name} ${reactionInfo.emoji} → Message ${originalMessage.message._id}`);
 
-        // Record analytics
-        await this.smsSystem.dbManager.recordAnalytic(
-            'reaction_received',
-            1,
-            `${reactionInfo.type} by ${reactor.name} (${deviceType}, ${originalMessage.matchType}, ${(confidence * 100).toFixed(1)}% confidence)`
-        );
+        // Record analytics (optional - won't fail)
+        try {
+            await this.smsSystem.dbManager.recordAnalytic(
+                'reaction_received',
+                1,
+                `${reactionInfo.type} by ${reactor.name} (${deviceType}, ${originalMessage.matchType}, ${(confidence * 100).toFixed(1)}% confidence)`
+            );
+        } catch (analyticsError) {
+            this.logger.warn(`⚠️ Could not record analytics: ${analyticsError.message}`);
+        }
 
         return reaction;
 
     } catch (error) {
-        this.logger.error(`❌ Error storing reaction: ${error.message}`);
-        this.logger.error(`❌ Full error: ${JSON.stringify(error)}`);
+        this.logger.error(`❌ REACTION STORAGE ERROR: ${error.message}`);
+        this.logger.error(`❌ FULL ERROR DETAILS: ${JSON.stringify(error)}`);
+        
+        // 🔥 IMPORTANT: Even if storage fails, we still processed it silently
+        // This prevents the reaction from being broadcast
         throw error;
     }
 }
@@ -3764,6 +3798,57 @@ async getReactionAnalytics(days = 7) {
 
 
 async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
+    
+        const reactionPatterns = [
+        /❤️.*to\s*"/,
+        /😂.*to\s*"/,
+        /👍.*to\s*"/,
+        /👎.*to\s*"/,
+        /😮.*to\s*"/,
+        /😢.*to\s*"/,
+        /😠.*to\s*"/,
+        /🙏.*to\s*"/,
+        /✨.*to\s*"/,
+        /💯.*to\s*"/,
+        /‼️.*to\s*"/,
+        /❓.*to\s*"/,
+        /Loved\s*"/,
+        /Liked\s*"/,
+        /Disliked\s*"/,
+        /Laughed at\s*"/,
+        /Emphasized\s*"/,
+        /Questioned\s*"/
+    ];
+
+    // Check if message matches ANY reaction pattern
+    for (const pattern of reactionPatterns) {
+        if (pattern.test(messageBody)) {
+            logger.info(`🚨 EMERGENCY FALLBACK: Detected reaction pattern, forcing silent processing`);
+            logger.info(`🔇 REACTION SILENCED: "${messageBody}"`);
+            
+            // Try to process normally if possible
+            try {
+                if (this.reactionSystem) {
+                    const reactionData = await this.reactionSystem.detectReaction(messageBody, fromPhone);
+                    if (reactionData) {
+                        try {
+                            await this.reactionSystem.storeReaction(reactionData);
+                            logger.info(`✅ Emergency reaction stored successfully`);
+                        } catch (storageError) {
+                            logger.warn(`⚠️ Emergency storage failed: ${storageError.message}`);
+                        }
+                    }
+                }
+            } catch (emergencyError) {
+                logger.warn(`⚠️ Emergency processing failed: ${emergencyError.message}`);
+            }
+            
+            // 🔥 CRITICAL: ALWAYS return null for anything that looks like a reaction
+            return null;
+        }
+    }
+    
+    
     logger.info(`📨 Incoming message from ${fromPhone}`);
 
     try {
@@ -3798,10 +3883,8 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
         if (messageBody && messageBody.length > 0) {
             logger.info(`🔍 About to check for reactions in: "${messageBody}"`);
             
-            // Check if this reactionSystem exists
             if (!this.reactionSystem) {
                 logger.error(`❌ CRITICAL: reactionSystem not initialized!`);
-                logger.error(`❌ Check your constructor: this.reactionSystem = new WhatsAppStyleReactionSystem(this, logger);`);
             } else {
                 logger.info(`✅ Reaction system is available, detecting...`);
                 
@@ -3809,15 +3892,27 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
                 const reactionData = await this.reactionSystem.detectReaction(messageBody, fromPhone);
                 
                 if (reactionData) {
+                    // 🔥 CRITICAL: This is a reaction - ALWAYS process silently, NEVER broadcast
+                    logger.info(`🔇 REACTION DETECTED - PROCESSING SILENTLY (NO BROADCAST)`);
+                    
                     try {
                         await this.reactionSystem.storeReaction(reactionData);
-                        logger.info(`✅ REACTION PROCESSED SILENTLY`);
-                        return null; // CRITICAL: Always return null for reactions
+                        logger.info(`✅ REACTION STORED SUCCESSFULLY: ${member.name} ${reactionData.reactionInfo.emoji} → Message ${reactionData.originalMessage.message._id}`);
                     } catch (reactionError) {
-                        logger.error(`❌ Error processing reaction: ${reactionError.message}`);
-                        // 🔥 STILL return null - don't broadcast even if storage fails
-                        return null;
+                        logger.error(`❌ Error storing reaction: ${reactionError.message}`);
+                        logger.warn(`⚠️ REACTION STORAGE FAILED BUT STILL PROCESSING SILENTLY`);
                     }
+                    
+                    // Record reaction activity (if possible)
+                    try {
+                        await this.updateMemberActivity(fromPhone);
+                    } catch (activityError) {
+                        logger.warn(`⚠️ Could not update member activity: ${activityError.message}`);
+                    }
+                    
+                    // 🔥 CRITICAL: ALWAYS return null for reactions - NEVER broadcast
+                    logger.info(`🔇 REACTION PROCESSED SILENTLY - NO MESSAGE SENT TO CONGREGATION`);
+                    return null;
                 } else {
                     logger.info(`ℹ️ Not a reaction, processing as regular message`);
                 }
