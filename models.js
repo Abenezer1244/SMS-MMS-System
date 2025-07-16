@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const schedule = require('node-schedule');
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
@@ -32,7 +33,7 @@ const messageReactionSchema = new Schema({
     },
     reactionType: {
         type: String,
-        enum: ['love', 'laugh', 'like', 'dislike', 'surprise', 'sad', 'angry', 'praise', 'amen', 'pray'],
+        enum: ['love', 'laugh', 'like', 'dislike', 'surprise', 'sad', 'angry', 'praise', 'amen', 'pray', 'emphasis', 'question'],
         required: true,
         index: true
     },
@@ -75,13 +76,14 @@ const messageReactionSchema = new Schema({
     collection: 'message_reactions'
 });
 
-// Add compound indexes for efficient queries
+// Enhanced compound indexes for better performance
 messageReactionSchema.index({ originalMessageId: 1, reactionType: 1 });
 messageReactionSchema.index({ originalMessageHash: 1, createdAt: -1 });
 messageReactionSchema.index({ isProcessed: 1, createdAt: -1 });
+messageReactionSchema.index({ reactorPhone: 1, createdAt: -1 });
+messageReactionSchema.index({ processingMethod: 1, confidence: -1 });
 
 const MessageReaction = mongoose.model('MessageReaction', messageReactionSchema);
-
 // ============================================================================
 // PRODUCTION REACTION DETECTION ENGINE
 // ============================================================================

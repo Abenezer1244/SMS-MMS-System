@@ -15,6 +15,7 @@ const { v4: uuidv4 } = require('uuid');
 const winston = require('winston');
 const morgan = require('morgan');
 const schedule = require('node-schedule'); 
+const crypto = require('crypto');
 
 
 // MongoDB imports
@@ -128,95 +129,112 @@ app.use(morgan('combined', {
 }));
 
 
+// 🔥 FIXED REACTION SYSTEM - Replace the WhatsAppStyleReactionSystem class in app.js
+
 class WhatsAppStyleReactionSystem {
     constructor(smsSystem, logger) {
         this.smsSystem = smsSystem;
         this.logger = logger;
         
-        // Verify required dependencies
-        try {
-            if (!schedule) {
-                throw new Error('node-schedule package not found. Run: npm install node-schedule');
-            }
-            if (!crypto) {
-                throw new Error('crypto module not available');
-            }
-        } catch (depError) {
-            this.logger.error(`❌ Dependency check failed: ${depError.message}`);
-            throw depError;
-        }
-        
-        // WhatsApp-style reaction patterns (production-tested)
-this.reactionPatterns = {
-    // iPhone patterns (iOS 15+)
-    iphone: [
-        /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+"(.+)"$/,
-        /^(❤️|👍|👎|😂|‼️|❓)\s+"(.+)"$/,
-        /^Reacted\s+(❤️|👍|👎|😂|‼️|❓)\s+to\s+"(.+)"$/,
-        /^(❤️|👍|👎|😂|‼️|❓)\s+to\s+"(.+)"$/,
-        // 🔥 ADD: Handle sender format for iPhone reactions
-        /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+"([^:]+):\s*(.+)"$/
-    ],
-    
-    // Android patterns (RCS/SMS)
-    android: [
-        /^Reacted\s+(❤️|😂|😮|😢|😠|👍|👎)\s+to\s+"(.+)"$/,
-        /^(❤️|😂|😮|😢|😠|👍|👎)\s+"(.+)"$/,
-        /^Reaction:\s+(❤️|😂|😮|😢|😠|👍|👎)\s+-\s+"(.+)"$/,
-        /^(❤️|😂|😮|😢|😠|👍|👎)\s+to\s+"(.+)"$/
-    ],
-    
-    // Generic/fallback patterns
-    generic: [
-        // Your specific format: ❤️ to "MIKE: Test"
-        /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+to\s+"([^:]+):\s*(.+)"$/,
-        // Standard format: ❤️ to "message"
-        /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+to\s+"(.+)"$/,
-        // Direct format: ❤️ "message"
-        /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+"(.+)"$/,
-        // Simple format: ❤️ message
-        /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+(.+)$/,
-        // Other formats
-        /^Reacted\s+(.+)\s+to\s+"(.+)"$/,
-        /^(.+)\s+reaction:\s+"(.+)"$/
-    ]
-};
+        // 🔥 PRODUCTION-TESTED REACTION PATTERNS - Updated for real-world usage
+        this.reactionPatterns = {
+            // iPhone patterns (iOS 15+) - FIXED
+            iphone: [
+                /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+"(.+)"$/i,
+                /^(❤️|👍|👎|😂|‼️|❓)\s+"(.+)"$/,
+                /^Reacted\s+(❤️|👍|👎|😂|‼️|❓)\s+to\s+"(.+)"$/i,
+                // NEW: Handle sender format "Loved "MIKE: Test""
+                /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+"([^:]+):\s*(.+)"$/i
+            ],
+            
+            // Android patterns (RCS/SMS) - FIXED
+            android: [
+                /^Reacted\s+(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+to\s+"(.+)"$/i,
+                /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+"(.+)"$/,
+                /^Reaction:\s+(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+-\s+"(.+)"$/i,
+                /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+to\s+"(.+)"$/i
+            ],
+            
+            // Generic/fallback patterns - ENHANCED
+            generic: [
+                // Your specific format: ❤️ to "MIKE: Test"
+                /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+to\s+"([^:]+):\s*(.+)"$/i,
+                // Standard format: ❤️ to "message"
+                /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+to\s+"(.+)"$/i,
+                // Direct format: ❤️ "message"
+                /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+"(.+)"$/,
+                // Simple format without quotes: ❤️ message
+                /^(❤️|😂|😮|😢|😠|👍|👎|🙏|✨|💯)\s+(.+)$/,
+                // Reaction with "to": love to "message"
+                /^(love|like|laugh|wow|sad|angry|pray|praise|amen)\s+to\s+"(.+)"$/i,
+                // Simple reaction: love "message"
+                /^(love|like|laugh|wow|sad|angry|pray|praise|amen)\s+"(.+)"$/i,
+                // Other formats
+                /^Reacted\s+(.+)\s+to\s+"(.+)"$/i,
+                /^(.+)\s+reaction:\s+"(.+)"$/i
+            ]
+        };
 
-        // Emoji to reaction type mapping
+        // Enhanced emoji mapping
         this.emojiMap = {
             '❤️': { type: 'love', name: 'Love', emoji: '❤️' },
             '😍': { type: 'love', name: 'Love', emoji: '❤️' },
+            '💕': { type: 'love', name: 'Love', emoji: '❤️' },
             '😂': { type: 'laugh', name: 'Laugh', emoji: '😂' },
             '🤣': { type: 'laugh', name: 'Laugh', emoji: '😂' },
+            '😄': { type: 'laugh', name: 'Laugh', emoji: '😂' },
             '👍': { type: 'like', name: 'Like', emoji: '👍' },
+            '👍🏻': { type: 'like', name: 'Like', emoji: '👍' },
+            '👍🏼': { type: 'like', name: 'Like', emoji: '👍' },
+            '👍🏽': { type: 'like', name: 'Like', emoji: '👍' },
+            '👍🏾': { type: 'like', name: 'Like', emoji: '👍' },
+            '👍🏿': { type: 'like', name: 'Like', emoji: '👍' },
             '👎': { type: 'dislike', name: 'Dislike', emoji: '👎' },
             '😮': { type: 'surprise', name: 'Wow', emoji: '😮' },
             '😯': { type: 'surprise', name: 'Wow', emoji: '😮' },
+            '😲': { type: 'surprise', name: 'Wow', emoji: '😮' },
             '😢': { type: 'sad', name: 'Sad', emoji: '😢' },
             '😭': { type: 'sad', name: 'Sad', emoji: '😢' },
+            '😰': { type: 'sad', name: 'Sad', emoji: '😢' },
             '😠': { type: 'angry', name: 'Angry', emoji: '😠' },
             '😡': { type: 'angry', name: 'Angry', emoji: '😠' },
+            '🤬': { type: 'angry', name: 'Angry', emoji: '😠' },
             '🙏': { type: 'pray', name: 'Pray', emoji: '🙏' },
+            '🙏🏻': { type: 'pray', name: 'Pray', emoji: '🙏' },
+            '🙏🏼': { type: 'pray', name: 'Pray', emoji: '🙏' },
+            '🙏🏽': { type: 'pray', name: 'Pray', emoji: '🙏' },
+            '🙏🏾': { type: 'pray', name: 'Pray', emoji: '🙏' },
+            '🙏🏿': { type: 'pray', name: 'Pray', emoji: '🙏' },
             '✨': { type: 'praise', name: 'Praise', emoji: '✨' },
+            '🌟': { type: 'praise', name: 'Praise', emoji: '✨' },
+            '⭐': { type: 'praise', name: 'Praise', emoji: '✨' },
             '💯': { type: 'amen', name: 'Amen', emoji: '💯' },
-            '‼️': { type: 'surprise', name: 'Wow', emoji: '❗' },
-            '❓': { type: 'surprise', name: 'Question', emoji: '❓' }
+            '‼️': { type: 'emphasis', name: 'Emphasis', emoji: '‼️' },
+            '❗': { type: 'emphasis', name: 'Emphasis', emoji: '‼️' },
+            '❓': { type: 'question', name: 'Question', emoji: '❓' },
+            '❔': { type: 'question', name: 'Question', emoji: '❓' }
         };
 
-        // Text reaction keywords
+        // Enhanced text reaction keywords
         this.textReactionMap = {
             'loved': { type: 'love', emoji: '❤️' },
             'liked': { type: 'like', emoji: '👍' },
             'disliked': { type: 'dislike', emoji: '👎' },
             'laughed at': { type: 'laugh', emoji: '😂' },
+            'laugh': { type: 'laugh', emoji: '😂' },
             'emphasized': { type: 'praise', emoji: '✨' },
-            'questioned': { type: 'surprise', emoji: '❓' },
+            'questioned': { type: 'question', emoji: '❓' },
             'amen': { type: 'amen', emoji: '💯' },
             'praise': { type: 'praise', emoji: '✨' },
-            'pray': { type: 'pray', emoji: '🙏' }
+            'pray': { type: 'pray', emoji: '🙏' },
+            'love': { type: 'love', emoji: '❤️' },
+            'like': { type: 'like', emoji: '👍' },
+            'wow': { type: 'surprise', emoji: '😮' },
+            'sad': { type: 'sad', emoji: '😢' },
+            'angry': { type: 'angry', emoji: '😠' }
         };
 
-        // Initialize scheduler with error handling
+        // Initialize scheduler
         try {
             this.setupReactionScheduler();
             this.logger.info('✅ WhatsApp-style reaction system initialized successfully');
@@ -226,24 +244,32 @@ this.reactionPatterns = {
         }
     }
 
-    // ========================================================================
-    // CORE REACTION DETECTION
-    // ========================================================================
-
+    // 🔥 ENHANCED REACTION DETECTION
     async detectReaction(messageText, senderPhone) {
         const startTime = Date.now();
         
         try {
-            this.logger.info(`🔍 Analyzing potential reaction from ${senderPhone}: "${messageText}"`);
+            this.logger.info(`🔍 ENHANCED: Analyzing reaction from ${senderPhone}: "${messageText}"`);
 
+            // Clean the message text
+            const cleanText = messageText.trim();
+            
             // Try each device type pattern
-            for (const deviceType of ['iphone', 'android', 'generic']) {
+            for (const deviceType of ['generic', 'iphone', 'android']) {
                 const patterns = this.reactionPatterns[deviceType];
                 
-                for (const pattern of patterns) {
-                    const match = messageText.match(pattern);
+                this.logger.info(`🔧 Testing ${deviceType} patterns (${patterns.length} patterns)`);
+                
+                for (let i = 0; i < patterns.length; i++) {
+                    const pattern = patterns[i];
+                    this.logger.info(`🔧 Pattern ${i + 1}: ${pattern}`);
+                    
+                    const match = cleanText.match(pattern);
                     
                     if (match) {
+                        this.logger.info(`✅ PATTERN MATCH! Device: ${deviceType}, Pattern: ${i + 1}`);
+                        this.logger.info(`✅ Match groups: ${JSON.stringify(match)}`);
+                        
                         const reaction = await this.processReactionMatch(
                             match, deviceType, messageText, senderPhone
                         );
@@ -254,7 +280,10 @@ this.reactionPatterns = {
                                 'reaction_detection', durationMs, true
                             );
                             
+                            this.logger.info(`🎉 REACTION SUCCESSFULLY DETECTED AND PROCESSED!`);
                             return reaction;
+                        } else {
+                            this.logger.warn(`⚠️ Pattern matched but reaction processing failed`);
                         }
                     }
                 }
@@ -271,246 +300,215 @@ this.reactionPatterns = {
             );
             
             this.logger.error(`❌ Reaction detection error: ${error.message}`);
+            this.logger.error(`❌ Stack trace: ${error.stack}`);
             return null;
         }
     }
 
-async processReactionMatch(match, deviceType, originalText, senderPhone) {
-    try {
-        let reactionIdentifier, messageQuote;
+    // 🔥 ENHANCED REACTION PROCESSING
+    async processReactionMatch(match, deviceType, originalText, senderPhone) {
+        try {
+            let reactionIdentifier, messageQuote;
 
-        this.logger.info(`🔧 Processing reaction match: Device=${deviceType}, Match=${JSON.stringify(match)}`);
+            this.logger.info(`🔧 Processing reaction match: Device=${deviceType}, Match=${JSON.stringify(match)}`);
 
-        // Extract reaction and message based on device pattern
-        if (deviceType === 'iphone') {
-            reactionIdentifier = match[1];
-            messageQuote = match[2];
-            
-            // 🔥 NEW: Handle iPhone sender format "Loved "MIKE: Test""
-            if (match[3]) {
-                // Pattern matched iPhone reaction with sender: "Loved "MIKE: Test""
-                // match[1] = Loved, match[2] = MIKE, match[3] = Test
-                messageQuote = match[3]; // Just the message part
-                this.logger.info(`🔧 iPhone: Extracted message from sender format: "${messageQuote}"`);
-            }
-        } else if (deviceType === 'android') {
-            reactionIdentifier = match[1];
-            messageQuote = match[2];
-        } else { // generic
-            reactionIdentifier = match[1];
-            messageQuote = match[2] || match[1];
-            
-            // Handle three-group match for "SENDER: message" format
-            if (match[3]) {
-                messageQuote = match[3]; // Just the message part
-                this.logger.info(`🔧 Generic: Extracted message from sender format: "${messageQuote}"`);
-            }
-        }
-
-        if (!messageQuote) {
-            this.logger.warn(`⚠️ No message quote found in reaction: ${originalText}`);
-            return null;
-        }
-
-        // Determine reaction type and emoji
-        const reactionInfo = this.parseReactionType(reactionIdentifier);
-        if (!reactionInfo) {
-            this.logger.warn(`⚠️ Unknown reaction type: ${reactionIdentifier}`);
-            return null;
-        }
-
-        // Find the original message this reaction refers to
-        const originalMessage = await this.findOriginalMessage(messageQuote);
-        if (!originalMessage) {
-            this.logger.warn(`⚠️ Could not find original message for quote: "${messageQuote}"`);
-            return null;
-        }
-
-        // Get reactor information
-        const reactor = await this.smsSystem.getMemberInfo(senderPhone);
-        if (!reactor) {
-            this.logger.warn(`⚠️ Reactor not found: ${senderPhone}`);
-            return null;
-        }
-
-        this.logger.info(`✅ Reaction detected: ${reactor.name} ${reactionInfo.emoji} → "${messageQuote.substring(0, 50)}..."`);
-
-        return {
-            originalMessage,
-            messageQuote,
-            reactionInfo,
-            reactor,
-            deviceType,
-            originalText,
-            confidence: originalMessage.confidence
-        };
-
-    } catch (error) {
-        this.logger.error(`❌ Error processing reaction match: ${error.message}`);
-        return null;
-    }
-}
-
-    parseReactionType(identifier) {
-        // Check if it's an emoji
-        if (this.emojiMap[identifier]) {
-            return {
-                type: this.emojiMap[identifier].type,
-                emoji: this.emojiMap[identifier].emoji,
-                name: this.emojiMap[identifier].name
-            };
-        }
-
-        // Check if it's a text reaction
-        const lowerIdentifier = identifier.toLowerCase();
-        if (this.textReactionMap[lowerIdentifier]) {
-            const reactionData = this.textReactionMap[lowerIdentifier];
-            return {
-                type: reactionData.type,
-                emoji: reactionData.emoji,
-                name: lowerIdentifier
-            };
-        }
-
-        // Try to find emoji within the text
-        for (const [emoji, data] of Object.entries(this.emojiMap)) {
-            if (identifier.includes(emoji)) {
-                return {
-                    type: data.type,
-                    emoji: data.emoji,
-                    name: data.name
-                };
-            }
-        }
-
-        return null;
-    }
-
-    // ========================================================================
-    // SMART MESSAGE MATCHING
-    // ========================================================================
-
-async findOriginalMessage(messageQuote) {
-    try {
-        // Clean the quote for better matching
-        let cleanQuote = this.cleanMessageForMatching(messageQuote);
-        
-        // 🔥 NEW: Handle sender name format "MIKE: Test" -> "Test"
-        if (cleanQuote.includes(':')) {
-            const parts = cleanQuote.split(':');
-            if (parts.length >= 2) {
-                // Try both full quote and just the message part
-                const messageOnly = parts.slice(1).join(':').trim();
+            // Extract reaction and message based on device pattern
+            if (deviceType === 'iphone') {
+                reactionIdentifier = match[1];
                 
-                this.logger.info(`🔧 Detected sender format. Full: "${cleanQuote}", Message only: "${messageOnly}"`);
+                // Handle iPhone sender format "Loved "MIKE: Test""
+                if (match[3]) {
+                    // Pattern matched iPhone reaction with sender: "Loved "MIKE: Test""
+                    messageQuote = match[3]; // Just the message part
+                    this.logger.info(`🔧 iPhone: Extracted message from sender format: "${messageQuote}"`);
+                } else {
+                    messageQuote = match[2];
+                }
+            } else if (deviceType === 'android') {
+                reactionIdentifier = match[1];
+                messageQuote = match[2];
+            } else { // generic
+                reactionIdentifier = match[1];
                 
-                // Try to match the message part first
-                const messageOnlyResult = await this.findOriginalMessageByContent(messageOnly);
-                if (messageOnlyResult) {
-                    return messageOnlyResult;
+                // Handle three-group match for "SENDER: message" format
+                if (match[3]) {
+                    messageQuote = match[3]; // Just the message part
+                    this.logger.info(`🔧 Generic: Extracted message from sender format: "${messageQuote}"`);
+                } else {
+                    messageQuote = match[2];
                 }
             }
-        }
-        
-        // Fall back to original matching
-        return await this.findOriginalMessageByContent(cleanQuote);
-        
-    } catch (error) {
-        this.logger.error(`❌ Error finding original message: ${error.message}`);
-        return null;
-    }
-}
 
-// NEW HELPER METHOD: Extract message matching logic
-async findOriginalMessageByContent(cleanQuote) {
-    try {
-        const quoteHash = this.generateMessageHash(cleanQuote);
+            if (!messageQuote || messageQuote.trim() === '') {
+                this.logger.warn(`⚠️ No message quote found in reaction: ${originalText}`);
+                return null;
+            }
 
-        this.logger.info(`🔍 Searching for original message: "${cleanQuote}" (hash: ${quoteHash.substring(0, 8)}...)`);
+            // Clean the message quote
+            messageQuote = messageQuote.trim();
 
-        // Get recent messages (last 7 days)
-        const recentMessages = await this.smsSystem.dbManager.getRecentMessages(7 * 24);
-        
-        if (recentMessages.length === 0) {
-            this.logger.warn('⚠️ No recent messages found for reaction matching');
+            // Determine reaction type and emoji
+            const reactionInfo = this.parseReactionType(reactionIdentifier);
+            if (!reactionInfo) {
+                this.logger.warn(`⚠️ Unknown reaction type: ${reactionIdentifier}`);
+                return null;
+            }
+
+            // Find the original message this reaction refers to
+            const originalMessage = await this.findOriginalMessage(messageQuote);
+            if (!originalMessage) {
+                this.logger.warn(`⚠️ Could not find original message for quote: "${messageQuote}"`);
+                return null;
+            }
+
+            // Get reactor information
+            const reactor = await this.smsSystem.getMemberInfo(senderPhone);
+            if (!reactor) {
+                this.logger.warn(`⚠️ Reactor not found: ${senderPhone}`);
+                return null;
+            }
+
+            this.logger.info(`✅ Reaction detected: ${reactor.name} ${reactionInfo.emoji} → "${messageQuote.substring(0, 50)}..."`);
+
+            return {
+                originalMessage,
+                messageQuote,
+                reactionInfo,
+                reactor,
+                deviceType,
+                originalText,
+                confidence: originalMessage.confidence
+            };
+
+        } catch (error) {
+            this.logger.error(`❌ Error processing reaction match: ${error.message}`);
             return null;
         }
+    }
 
-        // Try exact hash match first (fastest)
-        for (const message of recentMessages) {
-            const messageHash = this.generateMessageHash(
-                this.cleanMessageForMatching(message.originalMessage)
-            );
+    // 🔥 ENHANCED MESSAGE MATCHING
+    async findOriginalMessage(messageQuote) {
+        try {
+            // Clean the quote for better matching
+            let cleanQuote = this.cleanMessageForMatching(messageQuote);
             
-            if (messageHash === quoteHash) {
-                this.logger.info(`✅ Exact hash match found for message: ${message._id}`);
-                return {
-                    message,
-                    matchType: 'exact_match',
-                    confidence: 1.0
-                };
+            // Handle sender name format "MIKE: Test" -> "Test"
+            if (cleanQuote.includes(':')) {
+                const parts = cleanQuote.split(':');
+                if (parts.length >= 2) {
+                    // Try both full quote and just the message part
+                    const messageOnly = parts.slice(1).join(':').trim();
+                    
+                    this.logger.info(`🔧 Detected sender format. Full: "${cleanQuote}", Message only: "${messageOnly}"`);
+                    
+                    // Try to match the message part first
+                    const messageOnlyResult = await this.findOriginalMessageByContent(messageOnly);
+                    if (messageOnlyResult) {
+                        return messageOnlyResult;
+                    }
+                }
             }
-        }
-
-        // Try fuzzy matching with similarity scoring
-        let bestMatch = null;
-        let bestScore = 0;
-
-        for (const message of recentMessages) {
-            const cleanMessage = this.cleanMessageForMatching(message.originalMessage);
-            const similarity = this.calculateSimilarity(cleanQuote, cleanMessage);
             
-            // Consider it a match if similarity > 70% (lowered threshold)
-            if (similarity > 0.7 && similarity > bestScore) {
-                bestScore = similarity;
-                bestMatch = {
-                    message,
-                    matchType: 'fuzzy_match',
-                    confidence: similarity
-                };
+            // Fall back to original matching
+            return await this.findOriginalMessageByContent(cleanQuote);
+            
+        } catch (error) {
+            this.logger.error(`❌ Error finding original message: ${error.message}`);
+            return null;
+        }
+    }
+
+    async findOriginalMessageByContent(cleanQuote) {
+        try {
+            const quoteHash = this.generateMessageHash(cleanQuote);
+
+            this.logger.info(`🔍 Searching for original message: "${cleanQuote}" (hash: ${quoteHash.substring(0, 8)}...)`);
+
+            // Get recent messages (last 7 days)
+            const recentMessages = await this.smsSystem.dbManager.getRecentMessages(7 * 24);
+            
+            if (recentMessages.length === 0) {
+                this.logger.warn('⚠️ No recent messages found for reaction matching');
+                return null;
             }
-        }
 
-        if (bestMatch) {
-            this.logger.info(`✅ Fuzzy match found with ${(bestMatch.confidence * 100).toFixed(1)}% confidence`);
-            return bestMatch;
-        }
-
-        // Try keyword matching for very short quotes
-        if (cleanQuote.length < 50) {
-            const keywords = cleanQuote.split(' ').filter(word => word.length > 2);
-            
+            // Try exact hash match first (fastest)
             for (const message of recentMessages) {
-                const cleanMessage = this.cleanMessageForMatching(message.originalMessage);
-                const keywordMatches = keywords.filter(keyword => 
-                    cleanMessage.toLowerCase().includes(keyword.toLowerCase())
+                const messageHash = this.generateMessageHash(
+                    this.cleanMessageForMatching(message.originalMessage)
                 );
                 
-                if (keywordMatches.length >= Math.min(keywords.length, 2) && keywords.length > 0) {
-                    this.logger.info(`✅ Keyword match found: ${keywordMatches.join(', ')}`);
+                if (messageHash === quoteHash) {
+                    this.logger.info(`✅ Exact hash match found for message: ${message._id}`);
                     return {
                         message,
-                        matchType: 'keyword_match',
-                        confidence: 0.6
+                        matchType: 'exact_match',
+                        confidence: 1.0
                     };
                 }
             }
+
+            // Try fuzzy matching with similarity scoring
+            let bestMatch = null;
+            let bestScore = 0;
+
+            for (const message of recentMessages) {
+                const cleanMessage = this.cleanMessageForMatching(message.originalMessage);
+                const similarity = this.calculateSimilarity(cleanQuote, cleanMessage);
+                
+                // Lower threshold for better matching (60% instead of 70%)
+                if (similarity > 0.6 && similarity > bestScore) {
+                    bestScore = similarity;
+                    bestMatch = {
+                        message,
+                        matchType: 'fuzzy_match',
+                        confidence: similarity
+                    };
+                }
+            }
+
+            if (bestMatch) {
+                this.logger.info(`✅ Fuzzy match found with ${(bestMatch.confidence * 100).toFixed(1)}% confidence`);
+                return bestMatch;
+            }
+
+            // Try keyword matching for very short quotes
+            if (cleanQuote.length < 50) {
+                const keywords = cleanQuote.split(' ').filter(word => word.length > 2);
+                
+                for (const message of recentMessages) {
+                    const cleanMessage = this.cleanMessageForMatching(message.originalMessage);
+                    const keywordMatches = keywords.filter(keyword => 
+                        cleanMessage.toLowerCase().includes(keyword.toLowerCase())
+                    );
+                    
+                    if (keywordMatches.length >= Math.min(keywords.length, 2) && keywords.length > 0) {
+                        this.logger.info(`✅ Keyword match found: ${keywordMatches.join(', ')}`);
+                        return {
+                            message,
+                            matchType: 'keyword_match',
+                            confidence: 0.6
+                        };
+                    }
+                }
+            }
+
+            this.logger.warn(`⚠️ No matching message found for: "${cleanQuote}"`);
+            return null;
+
+        } catch (error) {
+            this.logger.error(`❌ Error in message matching: ${error.message}`);
+            return null;
         }
-
-        this.logger.warn(`⚠️ No matching message found for: "${cleanQuote}"`);
-        return null;
-
-    } catch (error) {
-        this.logger.error(`❌ Error in message matching: ${error.message}`);
-        return null;
     }
-}
+
+    // Rest of the methods remain the same...
     cleanMessageForMatching(message) {
         return message
-            .replace(/[\n\r\t]/g, ' ')  // Replace line breaks with spaces
-            .replace(/\s+/g, ' ')       // Collapse multiple spaces
-            .replace(/['"'""`]/g, '"')  // Normalize quotes
-            .replace(/[^\w\s".,!?-]/g, '') // Remove special chars except basic punctuation
+            .replace(/[\n\r\t]/g, ' ')  
+            .replace(/\s+/g, ' ')       
+            .replace(/['"'""`]/g, '"')  
+            .replace(/[^\w\s".,!?-]/g, '') 
             .toLowerCase()
             .trim();
     }
@@ -520,7 +518,6 @@ async findOriginalMessageByContent(cleanQuote) {
     }
 
     calculateSimilarity(str1, str2) {
-        // Levenshtein distance-based similarity
         const longer = str1.length > str2.length ? str1 : str2;
         const shorter = str1.length > str2.length ? str2 : str1;
         
@@ -558,121 +555,142 @@ async findOriginalMessageByContent(cleanQuote) {
         return matrix[str2.length][str1.length];
     }
 
-    // ========================================================================
-    // REACTION STORAGE
-    // ========================================================================
+    parseReactionType(identifier) {
+        // Check if it's an emoji
+        if (this.emojiMap[identifier]) {
+            return {
+                type: this.emojiMap[identifier].type,
+                emoji: this.emojiMap[identifier].emoji,
+                name: this.emojiMap[identifier].name
+            };
+        }
 
-async storeReaction(reactionData) {
-    try {
-        const {
-            originalMessage,
-            messageQuote,
-            reactionInfo,
-            reactor,
-            deviceType,
-            originalText,
-            confidence
-        } = reactionData;
+        // Check if it's a text reaction
+        const lowerIdentifier = identifier.toLowerCase();
+        if (this.textReactionMap[lowerIdentifier]) {
+            const reactionData = this.textReactionMap[lowerIdentifier];
+            return {
+                type: reactionData.type,
+                emoji: reactionData.emoji,
+                name: lowerIdentifier
+            };
+        }
 
-        // 🔥 FORCE-FIX: Handle ALL possible phone field variations
-        let reactorPhone = 'unknown';
-        
-        if (reactor.phoneNumber) {
-            reactorPhone = reactor.phoneNumber;
-        } else if (reactor.phone) {
-            reactorPhone = reactor.phone;
-        } else if (typeof reactor === 'string') {
-            reactorPhone = reactor;
-        } else {
-            // Last resort: extract from any field that looks like a phone
-            for (const [key, value] of Object.entries(reactor)) {
-                if (typeof value === 'string' && (value.startsWith('+') || /^\d{10,}$/.test(value))) {
-                    reactorPhone = value;
-                    break;
+        // Try to find emoji within the text
+        for (const [emoji, data] of Object.entries(this.emojiMap)) {
+            if (identifier.includes(emoji)) {
+                return {
+                    type: data.type,
+                    emoji: data.emoji,
+                    name: data.name
+                };
+            }
+        }
+
+        return null;
+    }
+
+    // 🔥 ENHANCED REACTION STORAGE
+    async storeReaction(reactionData) {
+        try {
+            const {
+                originalMessage,
+                messageQuote,
+                reactionInfo,
+                reactor,
+                deviceType,
+                originalText,
+                confidence
+            } = reactionData;
+
+            // Extract phone number with maximum tolerance
+            let reactorPhone = 'unknown';
+            
+            if (reactor.phoneNumber) {
+                reactorPhone = reactor.phoneNumber;
+            } else if (reactor.phone) {
+                reactorPhone = reactor.phone;
+            } else if (typeof reactor === 'string') {
+                reactorPhone = reactor;
+            } else {
+                // Last resort: extract from any field that looks like a phone
+                for (const [key, value] of Object.entries(reactor)) {
+                    if (typeof value === 'string' && (value.startsWith('+') || /^\d{10,}$/.test(value))) {
+                        reactorPhone = value;
+                        break;
+                    }
                 }
             }
-        }
 
-        this.logger.info(`🔧 REACTOR DEBUG: ${JSON.stringify(reactor)}`);
-        this.logger.info(`🔧 USING PHONE: ${reactorPhone}`);
-
-        // Clean the phone number
-        if (reactorPhone !== 'unknown') {
-            reactorPhone = this.smsSystem.cleanPhoneNumber(reactorPhone);
-        }
-
-        // Check for duplicate reactions (optional - won't fail if this doesn't work)
-        try {
-            const existingReaction = await MessageReaction.findOne({
-                originalMessageId: originalMessage.message._id,
-                reactorPhone: reactorPhone,
-                reactionType: reactionInfo.type
-            });
-
-            if (existingReaction) {
-                this.logger.info(`ℹ️ Duplicate reaction ignored: ${reactor.name} already ${reactionInfo.name}d this message`);
-                return null;
+            // Clean the phone number
+            if (reactorPhone !== 'unknown') {
+                reactorPhone = this.smsSystem.cleanPhoneNumber(reactorPhone);
             }
-        } catch (duplicateError) {
-            this.logger.warn(`⚠️ Could not check for duplicates: ${duplicateError.message}`);
+
+            // Check for duplicate reactions
+            try {
+                const existingReaction = await MessageReaction.findOne({
+                    originalMessageId: originalMessage.message._id,
+                    reactorPhone: reactorPhone,
+                    reactionType: reactionInfo.type
+                });
+
+                if (existingReaction) {
+                    this.logger.info(`ℹ️ Duplicate reaction ignored: ${reactor.name} already ${reactionInfo.name}d this message`);
+                    return null;
+                }
+            } catch (duplicateError) {
+                this.logger.warn(`⚠️ Could not check for duplicates: ${duplicateError.message}`);
+            }
+
+            // Create reaction record
+            const reactionDoc = {
+                originalMessageId: originalMessage.message._id,
+                originalMessageText: originalMessage.message.originalMessage || 'unknown',
+                originalMessageHash: this.generateMessageHash(
+                    this.cleanMessageForMatching(originalMessage.message.originalMessage || 'unknown')
+                ),
+                reactorPhone: reactorPhone,
+                reactorName: reactor.name || 'Unknown',
+                reactionType: reactionInfo.type,
+                reactionEmoji: reactionInfo.emoji,
+                originalReactionText: originalText,
+                deviceType: deviceType || 'generic',
+                processingMethod: originalMessage.matchType || 'unknown',
+                confidence: confidence || 1.0,
+                isProcessed: false,
+                includedInSummary: false
+            };
+
+            const reaction = new MessageReaction(reactionDoc);
+            await reaction.save();
+
+            this.logger.info(`✅ REACTION STORED: ${reactor.name} ${reactionInfo.emoji} → Message ${originalMessage.message._id}`);
+
+            // Record analytics
+            try {
+                await this.smsSystem.dbManager.recordAnalytic(
+                    'reaction_received',
+                    1,
+                    `${reactionInfo.type} by ${reactor.name} (${deviceType}, ${originalMessage.matchType}, ${(confidence * 100).toFixed(1)}% confidence)`
+                );
+            } catch (analyticsError) {
+                this.logger.warn(`⚠️ Could not record analytics: ${analyticsError.message}`);
+            }
+
+            return reaction;
+
+        } catch (error) {
+            this.logger.error(`❌ REACTION STORAGE ERROR: ${error.message}`);
+            this.logger.error(`❌ FULL ERROR DETAILS: ${JSON.stringify(error)}`);
+            throw error;
         }
-
-        // Create reaction record with MAXIMUM error tolerance
-        const reactionDoc = {
-            originalMessageId: originalMessage.message._id,
-            originalMessageText: originalMessage.message.originalMessage || 'unknown',
-            originalMessageHash: this.generateMessageHash(
-                this.cleanMessageForMatching(originalMessage.message.originalMessage || 'unknown')
-            ),
-            reactorPhone: reactorPhone,
-            reactorName: reactor.name || 'Unknown',
-            reactionType: reactionInfo.type,
-            reactionEmoji: reactionInfo.emoji,
-            originalReactionText: originalText,
-            deviceType: deviceType || 'generic',
-            processingMethod: originalMessage.matchType || 'unknown',
-            confidence: confidence || 1.0,
-            isProcessed: false,
-            includedInSummary: false
-        };
-
-        this.logger.info(`🔧 CREATING REACTION DOC: ${JSON.stringify(reactionDoc)}`);
-
-        const reaction = new MessageReaction(reactionDoc);
-        await reaction.save();
-
-        this.logger.info(`✅ REACTION STORED SUCCESSFULLY: ${reactor.name} ${reactionInfo.emoji} → Message ${originalMessage.message._id}`);
-
-        // Record analytics (optional - won't fail)
-        try {
-            await this.smsSystem.dbManager.recordAnalytic(
-                'reaction_received',
-                1,
-                `${reactionInfo.type} by ${reactor.name} (${deviceType}, ${originalMessage.matchType}, ${(confidence * 100).toFixed(1)}% confidence)`
-            );
-        } catch (analyticsError) {
-            this.logger.warn(`⚠️ Could not record analytics: ${analyticsError.message}`);
-        }
-
-        return reaction;
-
-    } catch (error) {
-        this.logger.error(`❌ REACTION STORAGE ERROR: ${error.message}`);
-        this.logger.error(`❌ FULL ERROR DETAILS: ${JSON.stringify(error)}`);
-        
-        // 🔥 IMPORTANT: Even if storage fails, we still processed it silently
-        // This prevents the reaction from being broadcast
-        throw error;
     }
-}
 
-    // ========================================================================
-    // REACTION SUMMARIES
-    // ========================================================================
-
+    // 🔥 ENHANCED REACTION SUMMARY GENERATION
     async generateReactionSummary() {
         try {
-            this.logger.info('📊 Generating WhatsApp-style reaction summary...');
+            this.logger.info('📊 Generating enhanced reaction summary...');
 
             // Get unprocessed reactions
             const unprocessedReactions = await MessageReaction.find({
@@ -684,10 +702,17 @@ async storeReaction(reactionData) {
                 return null;
             }
 
+            this.logger.info(`📊 Found ${unprocessedReactions.length} unprocessed reactions`);
+
             // Group reactions by original message
             const messageReactions = {};
             
             for (const reaction of unprocessedReactions) {
+                if (!reaction.originalMessageId) {
+                    this.logger.warn(`⚠️ Skipping reaction without original message: ${reaction._id}`);
+                    continue;
+                }
+
                 const messageId = reaction.originalMessageId._id.toString();
                 
                 if (!messageReactions[messageId]) {
@@ -709,7 +734,7 @@ async storeReaction(reactionData) {
                 messageReactions[messageId].reactions[reaction.reactionType].reactors.push(reaction.reactorName);
             }
 
-            // Generate professional summary message
+            // Generate summary message
             const summary = this.formatReactionSummary(messageReactions);
             
             if (summary) {
@@ -718,6 +743,8 @@ async storeReaction(reactionData) {
                     { _id: { $in: unprocessedReactions.map(r => r._id) } },
                     { isProcessed: true, includedInSummary: true }
                 );
+
+                this.logger.info(`📊 Marked ${unprocessedReactions.length} reactions as processed`);
 
                 // Send summary to all members
                 await this.broadcastReactionSummary(summary);
@@ -739,7 +766,7 @@ async storeReaction(reactionData) {
             return null;
         }
 
-        let summary = '📊 RECENT REACTIONS\n';
+        let summary = '📊 REACTION SUMMARY\n';
         summary += '═══════════════════════\n\n';
 
         for (const [messageId, data] of Object.entries(messageReactions)) {
@@ -774,7 +801,7 @@ async storeReaction(reactionData) {
         }
 
         summary += '━━━━━━━━━━━━━━━━━━━━━━━\n';
-        summary += 'YesuWay Church • Reactions Summary';
+        summary += 'YesuWay Church • Reactions';
 
         return summary;
     }
@@ -788,6 +815,8 @@ async storeReaction(reactionData) {
                 this.logger.warn('⚠️ No recipients found for reaction summary');
                 return;
             }
+
+            this.logger.info(`📤 Broadcasting reaction summary to ${recipients.length} members...`);
 
             // Send to all members
             const deliveryStats = { sent: 0, failed: 0 };
@@ -819,10 +848,7 @@ async storeReaction(reactionData) {
         }
     }
 
-    // ========================================================================
-    // SCHEDULING WITH PROPER ERROR HANDLING
-    // ========================================================================
-
+    // 🔥 ENHANCED SCHEDULING
     setupReactionScheduler() {
         try {
             if (!schedule) {
@@ -832,7 +858,7 @@ async storeReaction(reactionData) {
 
             // Daily summary at 8 PM
             schedule.scheduleJob('0 20 * * *', async () => {
-                this.logger.info('⏰ Daily reaction summary triggered');
+                this.logger.info('⏰ Daily reaction summary triggered (8 PM)');
                 try {
                     await this.generateReactionSummary();
                 } catch (error) {
@@ -840,8 +866,8 @@ async storeReaction(reactionData) {
                 }
             });
 
-            // Periodic check every 30 minutes for active conversations
-            schedule.scheduleJob('*/30 * * * *', async () => {
+            // Periodic check every 15 minutes for active conversations
+            schedule.scheduleJob('*/15 * * * *', async () => {
                 try {
                     await this.checkForPeriodicSummary();
                 } catch (error) {
@@ -849,7 +875,7 @@ async storeReaction(reactionData) {
                 }
             });
 
-            this.logger.info('✅ Reaction scheduler configured successfully');
+            this.logger.info('✅ Enhanced reaction scheduler configured successfully');
 
         } catch (error) {
             this.logger.error(`❌ Failed to setup reaction scheduler: ${error.message}`);
@@ -859,21 +885,30 @@ async storeReaction(reactionData) {
 
     async checkForPeriodicSummary() {
         try {
-            // Check if there's been conversation silence for 30+ minutes
-            const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+            // Check if there's been conversation silence for 20+ minutes
+            const twentyMinutesAgo = new Date(Date.now() - 20 * 60 * 1000);
             
             const recentMessages = await this.smsSystem.dbManager.getRecentMessages(1);
             const lastMessage = recentMessages[0];
             
-            if (lastMessage && lastMessage.sentAt < thirtyMinutesAgo) {
+            if (lastMessage && lastMessage.sentAt < twentyMinutesAgo) {
                 // Check for unprocessed reactions
                 const unprocessedCount = await MessageReaction.countDocuments({
                     isProcessed: false
                 });
                 
-                if (unprocessedCount >= 5) { // Only if we have 5+ reactions
-                    this.logger.info('⏰ Conversation silence detected with pending reactions - generating summary');
+                if (unprocessedCount >= 3) { // Lower threshold for more frequent summaries
+                    this.logger.info(`⏰ Conversation silence detected with ${unprocessedCount} pending reactions - generating summary`);
                     await this.generateReactionSummary();
+                } else {
+                    this.logger.info(`ℹ️ Only ${unprocessedCount} pending reactions - waiting for more activity`);
+                }
+            } else {
+                const unprocessedCount = await MessageReaction.countDocuments({
+                    isProcessed: false
+                });
+                if (unprocessedCount > 0) {
+                    this.logger.info(`ℹ️ ${unprocessedCount} pending reactions, but conversation is still active`);
                 }
             }
         } catch (error) {
@@ -881,10 +916,7 @@ async storeReaction(reactionData) {
         }
     }
 
-    // ========================================================================
-    // ANALYTICS
-    // ========================================================================
-
+    // 🔥 ENHANCED ANALYTICS
     async getReactionAnalytics(days = 7) {
         try {
             const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -922,9 +954,25 @@ async storeReaction(reactionData) {
             return null;
         }
     }
+
+    // 🔥 MANUAL SUMMARY TRIGGER FOR TESTING
+    async forceSummaryGeneration() {
+        this.logger.info('🔧 MANUAL: Force generating reaction summary...');
+        try {
+            const summary = await this.generateReactionSummary();
+            if (summary) {
+                this.logger.info('✅ MANUAL: Summary generated successfully');
+                return summary;
+            } else {
+                this.logger.info('ℹ️ MANUAL: No reactions to summarize');
+                return null;
+            }
+        } catch (error) {
+            this.logger.error(`❌ MANUAL: Force summary failed: ${error.message}`);
+            throw error;
+        }
+    }
 }
-
-
 
 class ProductionChurchSMS {
     constructor() {
@@ -3770,59 +3818,9 @@ async getReactionAnalytics(days = 7) {
 }
 
 
+// 🔥 PART 3: Replace the handleIncomingMessage method in app.js with this enhanced version
 async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
-    
-        const reactionPatterns = [
-        /❤️.*to\s*"/,
-        /😂.*to\s*"/,
-        /👍.*to\s*"/,
-        /👎.*to\s*"/,
-        /😮.*to\s*"/,
-        /😢.*to\s*"/,
-        /😠.*to\s*"/,
-        /🙏.*to\s*"/,
-        /✨.*to\s*"/,
-        /💯.*to\s*"/,
-        /‼️.*to\s*"/,
-        /❓.*to\s*"/,
-        /Loved\s*"/,
-        /Liked\s*"/,
-        /Disliked\s*"/,
-        /Laughed at\s*"/,
-        /Emphasized\s*"/,
-        /Questioned\s*"/
-    ];
-
-    // Check if message matches ANY reaction pattern
-    for (const pattern of reactionPatterns) {
-        if (pattern.test(messageBody)) {
-            logger.info(`🚨 EMERGENCY FALLBACK: Detected reaction pattern, forcing silent processing`);
-            logger.info(`🔇 REACTION SILENCED: "${messageBody}"`);
-            
-            // Try to process normally if possible
-            try {
-                if (this.reactionSystem) {
-                    const reactionData = await this.reactionSystem.detectReaction(messageBody, fromPhone);
-                    if (reactionData) {
-                        try {
-                            await this.reactionSystem.storeReaction(reactionData);
-                            logger.info(`✅ Emergency reaction stored successfully`);
-                        } catch (storageError) {
-                            logger.warn(`⚠️ Emergency storage failed: ${storageError.message}`);
-                        }
-                    }
-                }
-            } catch (emergencyError) {
-                logger.warn(`⚠️ Emergency processing failed: ${emergencyError.message}`);
-            }
-            
-            // 🔥 CRITICAL: ALWAYS return null for anything that looks like a reaction
-            return null;
-        }
-    }
-    
-    
-    logger.info(`📨 Incoming message from ${fromPhone}`);
+    logger.info(`📨 ENHANCED: Incoming message from ${fromPhone}`);
 
     try {
         fromPhone = this.cleanPhoneNumber(fromPhone);
@@ -3849,34 +3847,87 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
 
         logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
 
+
+// Add this command handler to your handleIncomingMessage method:
+if (messageBody.toUpperCase() === 'TEST REACTIONS' && member.isAdmin) {
+    try {
+        const testResults = await this.testReactionSystemFull();
+        let response = '🧪 REACTION SYSTEM FULL TEST\n';
+        response += '═══════════════════════════════\n\n';
+        
+        testResults.forEach(test => {
+            const icon = test.status === 'pass' ? '✅' : '❌';
+            response += `${icon} ${test.test}: ${test.result || test.error}\n`;
+        });
+        
+        response += '\n💡 Send actual reactions to test full workflow';
+        return response;
+    } catch (error) {
+        return `❌ Test failed: ${error.message}`;
+    }
+}
+
         // ========================================================================
-        // 🔥 CRITICAL: REACTION DETECTION MUST BE FIRST!
+        // 🔥 ENHANCED REACTION DETECTION - ALWAYS FIRST PRIORITY
         // ========================================================================
         
         if (messageBody && messageBody.length > 0) {
-            logger.info(`🔍 About to check for reactions in: "${messageBody}"`);
+            logger.info(`🔍 ENHANCED: Checking for reactions in: "${messageBody}"`);
             
+            // 🔥 EMERGENCY PATTERN CHECK - Catch obvious reactions immediately
+            const emergencyReactionPatterns = [
+                /❤️.*to\s*"/i,
+                /😂.*to\s*"/i,
+                /👍.*to\s*"/i,
+                /👎.*to\s*"/i,
+                /😮.*to\s*"/i,
+                /😢.*to\s*"/i,
+                /😠.*to\s*"/i,
+                /🙏.*to\s*"/i,
+                /✨.*to\s*"/i,
+                /💯.*to\s*"/i,
+                /‼️.*to\s*"/i,
+                /❓.*to\s*"/i,
+                /Loved\s*"/i,
+                /Liked\s*"/i,
+                /Disliked\s*"/i,
+                /Laughed at\s*"/i,
+                /Emphasized\s*"/i,
+                /Questioned\s*"/i
+            ];
+
+            // Quick emergency check
+            let isLikelyReaction = false;
+            for (const pattern of emergencyReactionPatterns) {
+                if (pattern.test(messageBody)) {
+                    isLikelyReaction = true;
+                    logger.info(`🚨 EMERGENCY: Detected likely reaction pattern, processing silently`);
+                    break;
+                }
+            }
+
+            // Full reaction system processing
             if (!this.reactionSystem) {
                 logger.error(`❌ CRITICAL: reactionSystem not initialized!`);
             } else {
-                logger.info(`✅ Reaction system is available, detecting...`);
+                logger.info(`✅ Enhanced reaction system available, detecting...`);
                 
-                // Check if this is a reaction first
+                // Check if this is a reaction
                 const reactionData = await this.reactionSystem.detectReaction(messageBody, fromPhone);
                 
                 if (reactionData) {
                     // 🔥 CRITICAL: This is a reaction - ALWAYS process silently, NEVER broadcast
-                    logger.info(`🔇 REACTION DETECTED - PROCESSING SILENTLY (NO BROADCAST)`);
+                    logger.info(`🔇 ENHANCED REACTION DETECTED - PROCESSING SILENTLY (NO BROADCAST)`);
                     
                     try {
                         await this.reactionSystem.storeReaction(reactionData);
-                        logger.info(`✅ REACTION STORED SUCCESSFULLY: ${member.name} ${reactionData.reactionInfo.emoji} → Message ${reactionData.originalMessage.message._id}`);
+                        logger.info(`✅ ENHANCED REACTION STORED: ${member.name} ${reactionData.reactionInfo.emoji} → Message ${reactionData.originalMessage.message._id}`);
                     } catch (reactionError) {
-                        logger.error(`❌ Error storing reaction: ${reactionError.message}`);
+                        logger.error(`❌ Enhanced reaction storage failed: ${reactionError.message}`);
                         logger.warn(`⚠️ REACTION STORAGE FAILED BUT STILL PROCESSING SILENTLY`);
                     }
                     
-                    // Record reaction activity (if possible)
+                    // Record reaction activity
                     try {
                         await this.updateMemberActivity(fromPhone);
                     } catch (activityError) {
@@ -3884,10 +3935,17 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
                     }
                     
                     // 🔥 CRITICAL: ALWAYS return null for reactions - NEVER broadcast
-                    logger.info(`🔇 REACTION PROCESSED SILENTLY - NO MESSAGE SENT TO CONGREGATION`);
+                    logger.info(`🔇 ENHANCED REACTION PROCESSED SILENTLY - NO MESSAGE SENT TO CONGREGATION`);
                     return null;
+                    
+                } else if (isLikelyReaction) {
+                    // Emergency fallback - if it looks like a reaction but wasn't detected, still process silently
+                    logger.warn(`⚠️ EMERGENCY FALLBACK: Message looks like reaction but wasn't detected, processing silently anyway`);
+                    logger.warn(`⚠️ EMERGENCY SILENT: "${messageBody}"`);
+                    return null;
+                    
                 } else {
-                    logger.info(`ℹ️ Not a reaction, processing as regular message`);
+                    logger.info(`ℹ️ Enhanced analysis: Not a reaction, processing as regular message`);
                 }
             }
         }
@@ -3930,16 +3988,32 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
             return await this.handleReactionsCommand(fromPhone, messageBody);
         }
 
+        // 🔥 NEW: Manual reaction summary trigger for testing
+        if (messageBody.toUpperCase() === 'FORCE SUMMARY' && member.isAdmin) {
+            try {
+                const summary = await this.reactionSystem.forceSummaryGeneration();
+                if (summary) {
+                    return `✅ Manual reaction summary generated and sent to congregation.\n\nPreview:\n${summary.substring(0, 200)}...`;
+                } else {
+                    return "ℹ️ No pending reactions to summarize.";
+                }
+            } catch (error) {
+                logger.error(`❌ Manual summary generation failed: ${error.message}`);
+                return "❌ Failed to generate manual summary. Check logs for details.";
+            }
+        }
+
         // Regular message broadcasting
-        logger.info('📡 Processing message broadcast...');
+        logger.info('📡 Processing enhanced message broadcast...');
         return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
         
     } catch (error) {
-        logger.error(`❌ Message processing error: ${error.message}`);
+        logger.error(`❌ Enhanced message processing error: ${error.message}`);
         logger.error(`❌ Stack trace: ${error.stack}`);
         return "Message processing temporarily unavailable - please try again";
     }
 }
+
 
 // ============================================================================
 // STEP 2: ADD DEBUG VERSION OF REACTION DETECTION
@@ -4017,46 +4091,274 @@ async detectReaction(messageText, senderPhone) {
     // ADMIN REACTIONS COMMAND
     // ========================================================================
     
-    async handleReactionsCommand(adminPhone, commandText) {
-        const startTime = Date.now();
-        logger.info(`📊 Admin REACTIONS command from ${adminPhone}: ${commandText}`);
+async handleReactionsCommand(adminPhone, commandText) {
+    const startTime = Date.now();
+    logger.info(`📊 ENHANCED Admin REACTIONS command from ${adminPhone}: ${commandText}`);
 
-        try {
-            const admin = await this.getMemberInfo(adminPhone);
-            if (!admin || !admin.isAdmin) {
-                return "❌ Access denied. Only administrators can view reaction analytics.";
-            }
-
-            const parts = commandText.trim().split(/\s+/);
-            const subCommand = parts[1]?.toUpperCase() || 'STATS';
-
-            switch (subCommand) {
-                case 'STATS':
-                case 'ANALYTICS':
-                    return await this.getReactionStats();
-                
-                case 'SUMMARY':
-                case 'GENERATE':
-                    return await this.forceReactionSummary();
-                
-                case 'RECENT':
-                    return await this.getRecentReactions();
-                
-                case 'HELP':
-                    return this.getReactionsHelpMessage();
-                
-                default:
-                    return `❌ Unknown reactions command: ${subCommand}\n\n📋 Available commands:\n• REACTIONS STATS - View reaction analytics\n• REACTIONS SUMMARY - Force generate summary\n• REACTIONS RECENT - View recent reactions\n• REACTIONS HELP - Show detailed help`;
-            }
-
-        } catch (error) {
-            const durationMs = Date.now() - startTime;
-            await this.recordPerformanceMetric('reactions_command', durationMs, false, error.message);
-            
-            logger.error(`❌ REACTIONS command error: ${error.message}`);
-            return "❌ Error processing reactions command. Check system logs.";
+    try {
+        const admin = await this.getMemberInfo(adminPhone);
+        if (!admin || !admin.isAdmin) {
+            return "❌ Access denied. Only administrators can view reaction analytics.";
         }
+
+        const parts = commandText.trim().split(/\s+/);
+        const subCommand = parts[1]?.toUpperCase() || 'STATS';
+
+        switch (subCommand) {
+            case 'STATS':
+            case 'ANALYTICS':
+                return await this.getEnhancedReactionStats();
+            
+            case 'SUMMARY':
+            case 'GENERATE':
+            case 'FORCE':
+                return await this.forceEnhancedReactionSummary();
+            
+            case 'RECENT':
+                return await this.getEnhancedRecentReactions();
+            
+            case 'DEBUG':
+                return await this.getReactionDebugInfo();
+            
+            case 'TEST':
+                return await this.testReactionDetection();
+            
+            case 'HELP':
+                return this.getEnhancedReactionsHelp();
+            
+            default:
+                return `❌ Unknown reactions command: ${subCommand}\n\n📋 Available commands:\n• REACTIONS STATS - View reaction analytics\n• REACTIONS SUMMARY - Force generate summary\n• REACTIONS RECENT - View recent reactions\n• REACTIONS DEBUG - System debug info\n• REACTIONS TEST - Test reaction detection\n• REACTIONS HELP - Show detailed help`;
+        }
+
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('reactions_command', durationMs, false, error.message);
+        
+        logger.error(`❌ ENHANCED REACTIONS command error: ${error.message}`);
+        return "❌ Error processing reactions command. Check system logs.";
     }
+}
+
+
+
+async getEnhancedReactionStats() {
+    try {
+        const analytics = await this.reactionSystem.getReactionAnalytics(7);
+        if (!analytics) {
+            return "❌ Unable to retrieve reaction analytics.";
+        }
+
+        const unprocessedCount = await MessageReaction.countDocuments({ isProcessed: false });
+        const totalReactions = await MessageReaction.countDocuments({});
+        const processedCount = await MessageReaction.countDocuments({ isProcessed: true });
+
+        let stats = `📊 ENHANCED REACTION ANALYTICS (7 days)\n`;
+        stats += `═══════════════════════════════════════════\n\n`;
+        stats += `📈 Recent Reactions: ${analytics.totalReactions}\n`;
+        stats += `👥 Unique Reactors: ${analytics.uniqueReactors}\n`;
+        stats += `⏳ Pending Processing: ${unprocessedCount}\n`;
+        stats += `✅ Processed: ${processedCount}\n`;
+        stats += `📚 All-time Total: ${totalReactions}\n\n`;
+
+        if (Object.keys(analytics.byType).length > 0) {
+            stats += `🎭 BY REACTION TYPE:\n`;
+            for (const [type, count] of Object.entries(analytics.byType)) {
+                const emoji = this.reactionSystem.emojiMap[type]?.emoji || '❓';
+                stats += `   ${emoji} ${type}: ${count}\n`;
+            }
+            stats += `\n`;
+        }
+
+        if (Object.keys(analytics.byDevice).length > 0) {
+            stats += `📱 BY DEVICE TYPE:\n`;
+            for (const [device, count] of Object.entries(analytics.byDevice)) {
+                stats += `   📱 ${device}: ${count}\n`;
+            }
+        }
+
+        stats += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        stats += `YesuWay Church • Enhanced Reaction System`;
+
+        return stats;
+
+    } catch (error) {
+        logger.error(`❌ Error getting enhanced reaction stats: ${error.message}`);
+        return "❌ Error retrieving enhanced reaction statistics.";
+    }
+}
+
+async forceEnhancedReactionSummary() {
+    try {
+        logger.info('🔧 ADMIN: Forcing enhanced reaction summary generation...');
+        const summary = await this.reactionSystem.forceSummaryGeneration();
+        
+        if (summary) {
+            return `✅ Enhanced reaction summary generated and sent to congregation.\n\nSummary preview:\n${summary.substring(0, 400)}${summary.length > 400 ? '...' : ''}`;
+        } else {
+            return "ℹ️ No pending reactions to summarize.";
+        }
+
+    } catch (error) {
+        logger.error(`❌ Error forcing enhanced reaction summary: ${error.message}`);
+        return "❌ Error generating enhanced reaction summary.";
+    }
+}
+
+async getEnhancedRecentReactions() {
+    try {
+        const recentReactions = await MessageReaction.find({})
+            .populate('originalMessageId', 'originalMessage fromName sentAt')
+            .sort({ createdAt: -1 })
+            .limit(15);
+
+        if (recentReactions.length === 0) {
+            return "ℹ️ No recent reactions found.";
+        }
+
+        let response = `📝 ENHANCED RECENT REACTIONS (${recentReactions.length})\n`;
+        response += `═══════════════════════════════════════════\n\n`;
+
+        for (const reaction of recentReactions) {
+            const messagePreview = reaction.originalMessageId?.originalMessage?.length > 35
+                ? reaction.originalMessageId.originalMessage.substring(0, 35) + '...'
+                : reaction.originalMessageId?.originalMessage || 'Unknown message';
+
+            const timeAgo = this.getTimeAgo(reaction.createdAt);
+            const processed = reaction.isProcessed ? '✅' : '⏳';
+            const confidence = Math.round(reaction.confidence * 100);
+
+            response += `${processed} ${reaction.reactionEmoji} ${reaction.reactorName}\n`;
+            response += `   → "${messagePreview}"\n`;
+            response += `   📅 ${timeAgo} • ${reaction.deviceType} • ${confidence}% confidence\n`;
+            response += `   🔧 Method: ${reaction.processingMethod}\n\n`;
+        }
+
+        response += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        response += `YesuWay Church • Enhanced Recent Reactions`;
+
+        return response;
+
+    } catch (error) {
+        logger.error(`❌ Error getting enhanced recent reactions: ${error.message}`);
+        return "❌ Error retrieving enhanced recent reactions.";
+    }
+}
+
+async getReactionDebugInfo() {
+    try {
+        const totalReactions = await MessageReaction.countDocuments({});
+        const unprocessedReactions = await MessageReaction.countDocuments({ isProcessed: false });
+        const processedReactions = await MessageReaction.countDocuments({ isProcessed: true });
+        const recentMessages = await this.dbManager.getRecentMessages(24);
+
+        let debug = `🔧 REACTION SYSTEM DEBUG INFO\n`;
+        debug += `═══════════════════════════════════════\n\n`;
+        debug += `📊 DATABASE STATUS:\n`;
+        debug += `   • Total reactions: ${totalReactions}\n`;
+        debug += `   • Unprocessed: ${unprocessedReactions}\n`;
+        debug += `   • Processed: ${processedReactions}\n`;
+        debug += `   • Recent messages (24h): ${recentMessages.length}\n\n`;
+        
+        debug += `🔧 REACTION SYSTEM STATUS:\n`;
+        debug += `   • System initialized: ${this.reactionSystem ? 'Yes' : 'No'}\n`;
+        debug += `   • Scheduler active: ${schedule ? 'Yes' : 'No'}\n`;
+        debug += `   • Pattern count: ${this.reactionSystem ? Object.values(this.reactionSystem.reactionPatterns).flat().length : 'N/A'}\n`;
+        debug += `   • Emoji mappings: ${this.reactionSystem ? Object.keys(this.reactionSystem.emojiMap).length : 'N/A'}\n\n`;
+
+        debug += `📱 SAMPLE TEST PATTERNS:\n`;
+        debug += `   • "❤️ to "test message"" - Generic love reaction\n`;
+        debug += `   • "Loved "test message"" - iPhone love reaction\n`;
+        debug += `   • "Reacted ❤️ to "test message"" - Android love reaction\n`;
+        debug += `   • "🙏 to "prayer request"" - Pray reaction\n\n`;
+
+        debug += `💡 TROUBLESHOOTING:\n`;
+        debug += `   • Send "FORCE SUMMARY" to manually trigger summary\n`;
+        debug += `   • Check logs for detailed reaction detection info\n`;
+        debug += `   • Use "REACTIONS TEST" to verify pattern matching\n\n`;
+
+        debug += `YesuWay Church • Debug Info`;
+
+        return debug;
+
+    } catch (error) {
+        logger.error(`❌ Error getting reaction debug info: ${error.message}`);
+        return "❌ Error retrieving reaction debug information.";
+    }
+}
+
+async testReactionDetection() {
+    try {
+        const testMessages = [
+            '❤️ to "test message"',
+            'Loved "hello everyone"',
+            'Reacted ❤️ to "prayer request"',
+            '🙏 to "sunday service"',
+            'Laughed at "funny story"',
+            '👍 "great sermon"'
+        ];
+
+        let testResults = `🧪 REACTION DETECTION TEST\n`;
+        testResults += `═══════════════════════════════════\n\n`;
+
+        for (const testMessage of testMessages) {
+            try {
+                const isReaction = await this.reactionSystem.detectReaction(testMessage, '+1234567890');
+                const result = isReaction ? '✅ DETECTED' : '❌ NOT DETECTED';
+                testResults += `📝 "${testMessage}"\n`;
+                testResults += `   ${result}\n\n`;
+            } catch (testError) {
+                testResults += `📝 "${testMessage}"\n`;
+                testResults += `   ❌ ERROR: ${testError.message}\n\n`;
+            }
+        }
+
+        testResults += `💡 Note: Detection requires actual message matching.\n`;
+        testResults += `Send real reactions to test full functionality.\n\n`;
+        testResults += `YesuWay Church • Reaction Test`;
+
+        return testResults;
+
+    } catch (error) {
+        logger.error(`❌ Error testing reaction detection: ${error.message}`);
+        return "❌ Error running reaction detection test.";
+    }
+}
+
+getEnhancedReactionsHelp() {
+    return `📊 ENHANCED REACTIONS SYSTEM HELP\n` +
+           `═══════════════════════════════════════════\n\n` +
+           `🎭 ADVANCED WHATSAPP-STYLE REACTIONS:\n` +
+           `Your church SMS system supports industry-grade reaction processing!\n\n` +
+           `✅ HOW IT WORKS:\n` +
+           `• Members react to messages with emojis or text\n` +
+           `• Reactions are processed silently (no spam)\n` +
+           `• Smart pattern matching for all device types\n` +
+           `• Professional summaries sent to congregation\n` +
+           `• Complete analytics and tracking\n\n` +
+           `📱 SUPPORTED REACTIONS:\n` +
+           `❤️ Love • 😂 Laugh • 👍 Like • 👎 Dislike\n` +
+           `😮 Wow • 😢 Sad • 😠 Angry • 🙏 Pray\n` +
+           `✨ Praise • 💯 Amen • ‼️ Emphasis • ❓ Question\n\n` +
+           `🔑 ENHANCED ADMIN COMMANDS:\n` +
+           `• REACTIONS STATS - Detailed analytics\n` +
+           `• REACTIONS SUMMARY - Force generate summary\n` +
+           `• REACTIONS RECENT - Recent activity with details\n` +
+           `• REACTIONS DEBUG - System debug information\n` +
+           `• REACTIONS TEST - Test pattern detection\n` +
+           `• FORCE SUMMARY - Manual summary trigger\n\n` +
+           `⏰ AUTOMATIC SUMMARIES:\n` +
+           `• Daily at 8:00 PM\n` +
+           `• After 20min conversation silence (3+ reactions)\n` +
+           `• Smart timing based on activity\n\n` +
+           `🔧 TROUBLESHOOTING:\n` +
+           `• Use DEBUG command for system status\n` +
+           `• Check logs for detailed processing info\n` +
+           `• TEST command verifies pattern matching\n` +
+           `• FORCE SUMMARY for manual testing\n\n` +
+           `YesuWay Church • Enhanced Professional Reactions`;
+}
+
+
 
     async getReactionStats() {
         try {
