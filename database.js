@@ -7,7 +7,6 @@ const {
     DeliveryLog,
     SystemAnalytics,
     PerformanceMetrics,
-    MessageReaction
 } = require('./models');
 
 class MongoDBManager {
@@ -18,150 +17,6 @@ class MongoDBManager {
         this.maxRetries = 5;
     }
 
-        // Reaction-specific methods
-async getReactionsByMessage(messageId) {
-    try {
-        return await MessageReaction.find({ originalMessageId: messageId })
-            .sort({ createdAt: -1 });
-    } catch (error) {
-        this.logger.error(`❌ Error getting reactions by message: ${error.message}`);
-        return [];
-    }
-}
-
-async getReactionsByUser(phoneNumber, limit = 50) {
-    try {
-        return await MessageReaction.find({ reactorPhone: phoneNumber })
-            .populate('originalMessageId', 'originalMessage fromName sentAt')
-            .sort({ createdAt: -1 })
-            .limit(limit);
-    } catch (error) {
-        this.logger.error(`❌ Error getting reactions by user: ${error.message}`);
-        return [];
-    }
-}
-
-async getUnprocessedReactions() {
-    try {
-        return await MessageReaction.find({ isProcessed: false })
-            .populate('originalMessageId', 'originalMessage fromName sentAt')
-            .sort({ createdAt: -1 });
-    } catch (error) {
-        this.logger.error(`❌ Error getting unprocessed reactions: ${error.message}`);
-        return [];
-    }
-}
-
-async markReactionsAsProcessed(reactionIds) {
-    try {
-        const result = await MessageReaction.updateMany(
-            { _id: { $in: reactionIds } },
-            { 
-                isProcessed: true, 
-                includedInSummary: true,
-                processedAt: new Date()
-            }
-        );
-        
-        this.logger.info(`✅ Marked ${result.modifiedCount} reactions as processed`);
-        return result.modifiedCount;
-    } catch (error) {
-        this.logger.error(`❌ Error marking reactions as processed: ${error.message}`);
-        throw error;
-    }
-}
-
-async cleanupOldReactions(daysOld = 30) {
-    try {
-        const cutoffDate = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000);
-        
-        const deleteResult = await MessageReaction.deleteMany({
-            createdAt: { $lt: cutoffDate },
-            isProcessed: true
-        });
-
-        this.logger.info(`🧹 Cleaned up ${deleteResult.deletedCount} old reactions (${daysOld}+ days old)`);
-        return deleteResult.deletedCount;
-
-    } catch (error) {
-        this.logger.error(`❌ Error cleaning up old reactions: ${error.message}`);
-        throw error;
-    }
-}
-async getReactionSummaryData(hoursBack = 24) {
-    try {
-        const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
-        
-        const pipeline = [
-            { $match: { createdAt: { $gte: since } } },
-            {
-                $group: {
-                    _id: '$originalMessageId',
-                    reactions: {
-                        $push: {
-                            type: '$reactionType',
-                            emoji: '$reactionEmoji',
-                            reactor: '$reactorName',
-                            createdAt: '$createdAt'
-                        }
-                    },
-                    reactionCount: { $sum: 1 }
-                }
-            },
-            { $sort: { reactionCount: -1 } }
-        ];
-
-        return await MessageReaction.aggregate(pipeline);
-
-    } catch (error) {
-        this.logger.error(`❌ Error getting reaction summary data: ${error.message}`);
-        return [];
-    }
-}
-
-async getDetailedReactionStats() {
-    try {
-        const [
-            totalReactions,
-            unprocessedReactions,
-            processedReactions,
-            uniqueReactors,
-            reactionsByType,
-            reactionsByDevice
-        ] = await Promise.all([
-            MessageReaction.countDocuments({}),
-            MessageReaction.countDocuments({ isProcessed: false }),
-            MessageReaction.countDocuments({ isProcessed: true }),
-            MessageReaction.distinct('reactorPhone'),
-            MessageReaction.aggregate([
-                { $group: { _id: '$reactionType', count: { $sum: 1 } } },
-                { $sort: { count: -1 } }
-            ]),
-            MessageReaction.aggregate([
-                { $group: { _id: '$deviceType', count: { $sum: 1 } } },
-                { $sort: { count: -1 } }
-            ])
-        ]);
-
-        return {
-            totalReactions,
-            unprocessedReactions,
-            processedReactions,
-            uniqueReactors: uniqueReactors.length,
-            reactionsByType: reactionsByType.reduce((acc, item) => {
-                acc[item._id] = item.count;
-                return acc;
-            }, {}),
-            reactionsByDevice: reactionsByDevice.reduce((acc, item) => {
-                acc[item._id] = item.count;
-                return acc;
-            }, {})
-        };
-    } catch (error) {
-        this.logger.error(`❌ Error getting detailed reaction stats: ${error.message}`);
-        return null;
-    }
-}
 
     async connect(connectionString, options = {}) {
         const defaultOptions = {
@@ -466,48 +321,6 @@ async getRecentMessages(hoursBack = 24) {
     }
 }
 
-async recordReactionAnalytic(reactionType, reactorName, messageId, confidence) {
-    try {
-        await this.recordAnalytic(
-            'reaction_processed',
-            1,
-            `Type: ${reactionType}, Reactor: ${reactorName}, Message: ${messageId}, Confidence: ${Math.round(confidence * 100)}%`
-        );
-    } catch (error) {
-        this.logger.error(`❌ Error recording reaction analytic: ${error.message}`);
-        // Don't throw - analytics failure shouldn't break reaction processing
-    }
-}
-
-async initializeReactionSystem() {
-    try {
-        this.logger.info('🔧 Initializing enhanced reaction system...');
-        
-        // Ensure indexes exist
-        await MessageReaction.createIndexes();
-        
-        // Check for any orphaned unprocessed reactions
-        const orphanedReactions = await MessageReaction.countDocuments({
-            isProcessed: false,
-            createdAt: { $lt: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Older than 24 hours
-        });
-        
-        if (orphanedReactions > 0) {
-            this.logger.warn(`⚠️ Found ${orphanedReactions} orphaned unprocessed reactions older than 24 hours`);
-            // Optionally mark them as processed or generate a summary
-        }
-        
-        const stats = await this.getDetailedReactionStats();
-        if (stats) {
-            this.logger.info(`✅ Reaction system initialized: ${stats.totalReactions} total reactions, ${stats.unprocessedReactions} pending`);
-        }
-        
-        return true;
-    } catch (error) {
-        this.logger.error(`❌ Error initializing reaction system: ${error.message}`);
-        return false;
-    }
-}
 
     // Media Operations
     async createMediaFile(mediaData) {
@@ -593,45 +406,7 @@ async initializeReactionSystem() {
         }
     }
 
-    // Health and Statistics
-async getHealthStats() {
-    try {
-        const [
-            activeMemberCount,
-            recentMessages24h,
-            processedMediaCount,
-            totalReactions,
-            unprocessedReactions
-        ] = await Promise.all([
-            Member.countDocuments({ active: true }),
-            BroadcastMessage.countDocuments({
-                sentAt: { $gt: new Date(Date.now() - 24 * 60 * 60 * 1000) }
-            }),
-            MediaFile.countDocuments({ uploadStatus: 'completed' }),
-            MessageReaction.countDocuments({}),
-            MessageReaction.countDocuments({ isProcessed: false })
-        ]);
 
-        return {
-            activeMemberCount,
-            recentMessages24h,
-            processedMediaCount,
-            totalReactions,
-            unprocessedReactions,
-            reactionSystemActive: true
-        };
-    } catch (error) {
-        this.logger.error(`❌ Error getting enhanced health stats: ${error.message}`);
-        return {
-            activeMemberCount: 0,
-            recentMessages24h: 0,
-            processedMediaCount: 0,
-            totalReactions: 0,
-            unprocessedReactions: 0,
-            reactionSystemActive: false
-        };
-    }
-}
 
     async getDeliveryStats() {
         try {
