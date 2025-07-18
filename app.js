@@ -30,7 +30,6 @@ const {
     DeliveryLog,
     SystemAnalytics,
     PerformanceMetrics,
-    MessageReaction
 } = require('./models');
 
 // Production logging configuration
