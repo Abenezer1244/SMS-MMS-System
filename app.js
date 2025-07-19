@@ -2837,79 +2837,209 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
     }
 }
 
-// SIMPLE REACTION DETECTION METHOD
 async isReactionMessage(messageBody) {
     try {
-        // Check for single emoji reactions
-        const singleEmojiPattern = /^(❤️|😂|👍|🙏|😍|🎉|👏|🔥|💯|😢|😮|🤔|😡|👎|😭|🥰|💪|🎊|🌟|⭐|✨|💝|🙌|👌|✅)$/;
-        if (singleEmojiPattern.test(messageBody)) {
+        // Trim the message to handle any whitespace
+        const trimmedMessage = messageBody.trim();
+        
+        logger.info(`🔍 Checking if message is reaction: "${trimmedMessage}"`);
+
+        // 1. Check for single emoji reactions (most common)
+        const singleEmojiPattern = /^(❤️|😂|👍|🙏|😍|🎉|👏|🔥|💯|😢|😮|🤔|😡|👎|😭|🥰|💪|🎊|🌟|⭐|✨|💝|🙌|👌|✅|‼️|⚠️|🆘|💔|💕|💖|💗|💘|💙|💚|💛|💜|🖤|🤍|🤎|💋|💯|💫|⭐|🌟|✨|💥|💦|💨)$/;
+        if (singleEmojiPattern.test(trimmedMessage)) {
+            logger.info(`✅ Detected single emoji reaction: ${trimmedMessage}`);
             return true;
         }
 
-        // Check for iPhone-style reactions
-        const iphonePattern = /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+".+"/i;
-        if (iphonePattern.test(messageBody)) {
-            return true;
+        // 2. Check for iPhone-style reactions (improved patterns)
+        const iphonePatterns = [
+            // With quotes
+            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+".+"/i,
+            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+'.+'/i,
+            
+            // Without quotes (common iPhone pattern)
+            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+.+/i,
+            
+            // Specific patterns we see in your screenshots
+            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+"[^"]*"$/i,
+            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+\S.*$/i
+        ];
+
+        for (const pattern of iphonePatterns) {
+            if (pattern.test(trimmedMessage)) {
+                logger.info(`✅ Detected iPhone reaction: ${trimmedMessage}`);
+                return true;
+            }
         }
 
-        // Check for Android-style reactions
-        const androidPattern = /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)\s+to\s+".+"/i;
-        if (androidPattern.test(messageBody)) {
-            return true;
+        // 3. Check for Android-style reactions
+        const androidPatterns = [
+            /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)\s+to\s+".+"/i,
+            /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)\s+to\s+'.+'/i,
+            /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)\s+to\s+.+/i
+        ];
+
+        for (const pattern of androidPatterns) {
+            if (pattern.test(trimmedMessage)) {
+                logger.info(`✅ Detected Android reaction: ${trimmedMessage}`);
+                return true;
+            }
         }
 
+        // 4. Check for specific reaction words that indicate reactions
+        const reactionKeywords = [
+            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned|Reacted)/i
+        ];
+
+        for (const keyword of reactionKeywords) {
+            if (keyword.test(trimmedMessage)) {
+                logger.info(`✅ Detected reaction by keyword: ${trimmedMessage}`);
+                return true;
+            }
+        }
+
+        logger.info(`❌ Not a reaction: "${trimmedMessage}"`);
         return false;
+
     } catch (error) {
         logger.error(`❌ Reaction detection error: ${error.message}`);
+        // If there's an error, assume it's not a reaction to avoid blocking regular messages
         return false;
     }
 }
 
-// SIMPLIFIED REACTION STORAGE
+// ALSO REPLACE THE storeReactionSilently METHOD with this improved version
+
 async storeReactionSilently(messageBody, fromPhone, senderName) {
     try {
         logger.info(`🔇 Storing reaction silently: "${messageBody}" from ${senderName}`);
         
         let emoji = '';
         let targetMessage = '';
+        let reactionType = 'unknown';
         
-        // Extract emoji from different reaction formats
-        if (/^(❤️|😂|👍|🙏|😍|🎉|👏|🔥|💯|😢|😮|🤔|😡|👎|😭|🥰|💪|🎊|🌟|⭐|✨|💝|🙌|👌|✅)$/.test(messageBody)) {
-            emoji = messageBody;
-            // For direct emoji, get the most recent message
+        // Extract emoji and target from different reaction formats
+        const trimmedMessage = messageBody.trim();
+
+        // Handle single emoji reactions
+        if (/^(❤️|😂|👍|🙏|😍|🎉|👏|🔥|💯|😢|😮|🤔|😡|👎|😭|🥰|💪|🎊|🌟|⭐|✨|💝|🙌|👌|✅|‼️|⚠️|🆘|💔|💕|💖|💗|💘|💙|💚|💛|💜|🖤|🤍|🤎|💋|💯|💫|⭐|🌟|✨|💥|💦|💨)$/.test(trimmedMessage)) {
+            emoji = trimmedMessage;
+            reactionType = 'direct_emoji';
+            
+            // Get the most recent message to react to
             const recentMessage = await this.getMostRecentMessage(fromPhone);
             targetMessage = recentMessage ? recentMessage.originalMessage.substring(0, 50) : 'Recent message';
-        } else if (messageBody.includes('Loved')) {
-            emoji = '❤️';
-            targetMessage = this.extractTargetFromReaction(messageBody);
-        } else if (messageBody.includes('Laughed at')) {
-            emoji = '😂';
-            targetMessage = this.extractTargetFromReaction(messageBody);
-        } else if (messageBody.includes('Reacted')) {
-            const emojiMatch = messageBody.match(/(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)/);
+        }
+        
+        // Handle iPhone-style reactions
+        else if (/^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)/i.test(trimmedMessage)) {
+            reactionType = 'iphone_reaction';
+            
+            // Map iPhone reactions to emojis
+            if (trimmedMessage.toLowerCase().startsWith('loved')) {
+                emoji = '❤️';
+            } else if (trimmedMessage.toLowerCase().startsWith('liked')) {
+                emoji = '👍';
+            } else if (trimmedMessage.toLowerCase().startsWith('disliked')) {
+                emoji = '👎';
+            } else if (trimmedMessage.toLowerCase().startsWith('laughed at')) {
+                emoji = '😂';
+            } else if (trimmedMessage.toLowerCase().startsWith('emphasized')) {
+                emoji = '‼️';
+            } else if (trimmedMessage.toLowerCase().startsWith('questioned')) {
+                emoji = '❓';
+            } else {
+                emoji = '❤️'; // Default fallback
+            }
+            
+            // Extract target message (everything after the reaction word)
+            targetMessage = this.extractTargetFromiPhoneReaction(trimmedMessage);
+        }
+        
+        // Handle Android-style reactions
+        else if (/^Reacted/i.test(trimmedMessage)) {
+            reactionType = 'android_reaction';
+            
+            const emojiMatch = trimmedMessage.match(/(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)/);
             emoji = emojiMatch ? emojiMatch[1] : '❤️';
-            targetMessage = this.extractTargetFromReaction(messageBody);
+            targetMessage = this.extractTargetFromAndroidReaction(trimmedMessage);
+        }
+        
+        // Fallback
+        else {
+            emoji = '❤️';
+            targetMessage = 'Message';
+            reactionType = 'unknown';
         }
 
-        // Store in database (create simple storage if MongoDB reaction system isn't ready)
-        await this.storeReactionInDatabase(emoji, targetMessage, fromPhone, senderName);
+        // Store in database
+        await this.storeReactionInDatabase(emoji, targetMessage, fromPhone, senderName, reactionType, trimmedMessage);
         
-        logger.info(`✅ Reaction stored: ${emoji} by ${senderName} for "${targetMessage}"`);
+        logger.info(`✅ Reaction stored: ${emoji} by ${senderName} for "${targetMessage}" (${reactionType})`);
+        
+        // Record analytics for admin tracking
+        await this.dbManager.recordAnalytic('reaction_detected_silently', 1, 
+            `${emoji} by ${senderName} (${reactionType}): "${targetMessage}"`);
         
     } catch (error) {
-        logger.error(`❌ Failed to store reaction: ${error.message}`);
+        logger.error(`❌ Failed to store reaction silently: ${error.message}`);
     }
 }
 
-// EXTRACT TARGET MESSAGE FROM REACTION TEXT
-extractTargetFromReaction(reactionText) {
+// NEW METHOD: Extract target from iPhone reactions
+extractTargetFromiPhoneReaction(reactionText) {
     try {
+        // Try to extract quoted text first
         const quoteMatch = reactionText.match(/"([^"]+)"/);
         if (quoteMatch) {
             return quoteMatch[1].substring(0, 50);
         }
+        
+        // Try single quotes
+        const singleQuoteMatch = reactionText.match(/'([^']+)'/);
+        if (singleQuoteMatch) {
+            return singleQuoteMatch[1].substring(0, 50);
+        }
+        
+        // Extract everything after the reaction word (for cases like "Loved Abel: Hsysb")
+        const words = reactionText.split(' ');
+        if (words.length > 1) {
+            // Skip the first word (Loved, Liked, etc.) and join the rest
+            const target = words.slice(1).join(' ').substring(0, 50);
+            return target || 'Message';
+        }
+        
         return 'Message';
     } catch (error) {
+        logger.error(`❌ Error extracting iPhone reaction target: ${error.message}`);
+        return 'Message';
+    }
+}
+
+// NEW METHOD: Extract target from Android reactions
+extractTargetFromAndroidReaction(reactionText) {
+    try {
+        // Look for "to" followed by quoted text
+        const toMatch = reactionText.match(/to\s+"([^"]+)"/i);
+        if (toMatch) {
+            return toMatch[1].substring(0, 50);
+        }
+        
+        const toSingleQuoteMatch = reactionText.match(/to\s+'([^']+)'/i);
+        if (toSingleQuoteMatch) {
+            return toSingleQuoteMatch[1].substring(0, 50);
+        }
+        
+        // Extract everything after "to"
+        const toIndex = reactionText.toLowerCase().indexOf(' to ');
+        if (toIndex !== -1) {
+            const target = reactionText.substring(toIndex + 4).trim().substring(0, 50);
+            return target || 'Message';
+        }
+        
+        return 'Message';
+    } catch (error) {
+        logger.error(`❌ Error extracting Android reaction target: ${error.message}`);
         return 'Message';
     }
 }
@@ -2934,7 +3064,8 @@ async getMostRecentMessage(excludePhone) {
 }
 
 // SIMPLE DATABASE STORAGE FOR REACTIONS
-async storeReactionInDatabase(emoji, targetMessage, fromPhone, senderName) {
+// UPDATED DATABASE STORAGE METHOD
+async storeReactionInDatabase(emoji, targetMessage, fromPhone, senderName, reactionType, originalText) {
     try {
         if (!this.dbManager.isConnected) {
             logger.warn('❌ Database not connected - cannot store reaction');
@@ -2950,8 +3081,8 @@ async storeReactionInDatabase(emoji, targetMessage, fromPhone, senderName) {
                     reactorName: senderName,
                     emoji: emoji,
                     targetMessage: targetMessage,
-                    reactionType: 'detected',
-                    originalReactionText: `${emoji} reaction`,
+                    reactionType: reactionType,
+                    originalReactionText: originalText,
                     processedForSummary: false,
                     detectedAt: new Date()
                 });
@@ -2966,7 +3097,7 @@ async storeReactionInDatabase(emoji, targetMessage, fromPhone, senderName) {
 
         // Fallback: Store in analytics table
         await this.dbManager.recordAnalytic('reaction_detected', 1, 
-            `${emoji} by ${senderName} for "${targetMessage}"`);
+            `${emoji} by ${senderName} (${reactionType}) for "${targetMessage}" - Original: "${originalText}"`);
         
         logger.info(`✅ Reaction stored in analytics as fallback`);
         
@@ -2974,6 +3105,7 @@ async storeReactionInDatabase(emoji, targetMessage, fromPhone, senderName) {
         logger.error(`❌ Database storage failed: ${error.message}`);
     }
 }
+
 
 // SIMPLE REACTION COMMAND HANDLER
 async handleReactionCommand(fromPhone, commandText) {
