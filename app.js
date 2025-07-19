@@ -14,6 +14,7 @@ const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const winston = require('winston');
 const morgan = require('morgan');
+const schedule = require('node-schedule'); // Already in your package.json
 
 
 
@@ -138,8 +139,10 @@ class ProductionChurchSMS {
 
         this.initializeServices();
         this.initializeDatabase();
+        this.initializeReactionSummaryScheduler();
         
         logger.info('SUCCESS: Production Church SMS System with MongoDB initialized');
+        logger.info('SUCCESS: Production Church SMS System with Reaction Summaries initialized');
     }
 
     buildMongoConnectionString() {
@@ -2749,7 +2752,6 @@ async cleanupOrphanedData() {
 
 
 
-// 🔥 PART 3: Replace the handleIncomingMessage method in app.js with this enhanced version
 async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
     logger.info(`📨 ENHANCED: Incoming message from ${fromPhone}`);
 
@@ -2778,7 +2780,17 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
 
         logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
 
-
+        // PRODUCTION REACTION DETECTION - No mocks, no tests
+        const reactionData = await this.detectAndProcessReaction(messageBody, fromPhone, member.name);
+        if (reactionData.isReaction) {
+            logger.info(`🔇 Reaction detected and stored: ${reactionData.emoji} for "${reactionData.targetMessage}"`);
+            
+            // Store reaction silently - no broadcast
+            await this.storeReactionData(reactionData);
+            
+            // Return null to prevent any broadcast
+            return null;
+        }
 
         // Check for HELP command
         if (messageBody.toUpperCase() === 'HELP') {
@@ -2806,10 +2818,13 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
             return await this.handleDemoteCommand(fromPhone, messageBody);
         }
 
+        if (messageBody.toUpperCase().startsWith('REACTION ')) {
+            return await this.handleReactionSummaryCommand(fromPhone, messageBody);
+        }
+
         if (messageBody.toUpperCase().startsWith('CLEANUP ') || messageBody.toUpperCase() === 'CLEANUP') {
             return await this.handleCleanupCommand(fromPhone, messageBody);
         }
-
 
         // Regular message broadcasting
         logger.info('📡 Processing enhanced message broadcast...');
@@ -2820,7 +2835,828 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
         logger.error(`❌ Stack trace: ${error.stack}`);
         return "Message processing temporarily unavailable - please try again";
     }
-}}
+}
+
+// PRODUCTION REACTION DETECTION ENGINE
+async detectAndProcessReaction(messageBody, fromPhone, senderName) {
+    const startTime = Date.now();
+    
+    try {
+        // INDUSTRIAL-GRADE REACTION PATTERNS
+        const reactionPatterns = [
+            // iPhone reactions
+            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+"(.+)"$/i,
+            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+'(.+)'$/i,
+            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+(.+)$/i,
+            
+            // Android reactions  
+            /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)\s+to\s+"(.+)"$/i,
+            /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)\s+to\s+'(.+)'$/i,
+            /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)\s+to\s+(.+)$/i,
+            
+            // Direct emoji reactions (common pattern)
+            /^(❤️|😂|👍|🙏|😍|🎉|👏|🔥|💯|😢|😮|🤔|😡|👎)$/,
+            
+            // Multiple emoji reactions
+            /^(❤️|😂|👍|🙏|😍|🎉|👏|🔥|💯|😢|😮|🤔|😡|👎){1,5}$/
+        ];
+
+        for (const pattern of reactionPatterns) {
+            const match = messageBody.match(pattern);
+            if (match) {
+                logger.info(`🎯 Reaction pattern matched: ${pattern} for message: "${messageBody}"`);
+                
+                const reactionData = await this.parseReactionMatch(match, fromPhone, senderName, messageBody);
+                if (reactionData) {
+                    const durationMs = Date.now() - startTime;
+                    await this.recordPerformanceMetric('reaction_detection', durationMs, true);
+                    
+                    return reactionData;
+                }
+            }
+        }
+
+        // Not a reaction - regular message
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('reaction_detection', durationMs, true);
+        
+        return { isReaction: false };
+        
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('reaction_detection', durationMs, false, error.message);
+        
+        logger.error(`❌ Reaction detection error: ${error.message}`);
+        return { isReaction: false };
+    }
+}
+
+// PRODUCTION REACTION PARSER
+async parseReactionMatch(match, fromPhone, senderName, originalMessage) {
+    try {
+        let emoji = '';
+        let targetMessage = '';
+        let reactionType = 'unknown';
+
+        // iPhone-style reactions
+        if (match[1] && (match[2] || match[3])) {
+            const action = match[1].toLowerCase();
+            targetMessage = match[2] || match[3] || '';
+            
+            const emojiMap = {
+                'loved': '❤️',
+                'liked': '👍', 
+                'disliked': '👎',
+                'laughed at': '😂',
+                'emphasized': '‼️',
+                'questioned': '❓'
+            };
+            
+            emoji = emojiMap[action] || '❤️';
+            reactionType = 'iphone_reaction';
+        }
+        
+        // Android-style reactions
+        else if (match[1] && match[1].match(/^(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)$/)) {
+            emoji = match[1];
+            targetMessage = match[2] || '';
+            reactionType = 'android_reaction';
+        }
+        
+        // Direct emoji reactions
+        else if (match[1] && match[1].match(/^(❤️|😂|👍|🙏|😍|🎉|👏|🔥|💯|😢|😮|🤔|😡|👎)+$/)) {
+            emoji = match[1].charAt(0); // Take first emoji if multiple
+            reactionType = 'direct_emoji';
+            
+            // For direct emoji, find the most recent message to react to
+            const recentMessage = await this.findMostRecentBroadcastMessage(fromPhone);
+            targetMessage = recentMessage ? recentMessage.originalMessage.substring(0, 50) : '';
+        }
+
+        if (emoji && emoji.length > 0) {
+            return {
+                isReaction: true,
+                emoji: emoji,
+                targetMessage: targetMessage.substring(0, 100), // Limit target message length
+                reactorPhone: fromPhone,
+                reactorName: senderName,
+                reactionType: reactionType,
+                originalReactionText: originalMessage,
+                detectedAt: new Date()
+            };
+        }
+
+        return null;
+        
+    } catch (error) {
+        logger.error(`❌ Reaction parsing error: ${error.message}`);
+        return null;
+    }
+}
+
+// PRODUCTION MESSAGE FINDER FOR REACTIONS
+async findMostRecentBroadcastMessage(excludePhone) {
+    try {
+        if (!this.dbManager.isConnected) {
+            return null;
+        }
+
+        // Find the most recent broadcast message from someone else
+        const recentMessage = await BroadcastMessage.findOne({
+            fromPhone: { $ne: excludePhone },
+            sentAt: { $gt: new Date(Date.now() - 2 * 60 * 60 * 1000) }, // Within last 2 hours
+            deliveryStatus: 'completed'
+        }).sort({ sentAt: -1 });
+
+        return recentMessage;
+        
+    } catch (error) {
+        logger.error(`❌ Error finding recent message: ${error.message}`);
+        return null;
+    }
+}
+
+// PRODUCTION REACTION STORAGE
+async storeReactionData(reactionData) {
+    const startTime = Date.now();
+    
+    try {
+        if (!this.dbManager.isConnected) {
+            logger.warn('❌ Database not connected - cannot store reaction');
+            return false;
+        }
+
+        // Create new MessageReaction model entry
+        const reaction = new MessageReaction({
+            reactorPhone: reactionData.reactorPhone,
+            reactorName: reactionData.reactorName,
+            emoji: reactionData.emoji,
+            targetMessage: reactionData.targetMessage,
+            reactionType: reactionData.reactionType,
+            originalReactionText: reactionData.originalReactionText,
+            processedForSummary: false,
+            summaryDate: null,
+            detectedAt: reactionData.detectedAt
+        });
+
+        await reaction.save();
+
+        // Record analytics
+        await this.dbManager.recordAnalytic('daily_reaction_stored', 1, 
+            `${reactionData.emoji} by ${reactionData.reactorName} for "${reactionData.targetMessage.substring(0, 30)}"`);
+
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('reaction_storage', durationMs, true);
+
+        logger.info(`✅ Reaction stored: ${reactionData.emoji} by ${reactionData.reactorName}`);
+        return true;
+        
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('reaction_storage', durationMs, false, error.message);
+        
+        logger.error(`❌ Failed to store reaction: ${error.message}`);
+        return false;
+    }
+}
+// PRODUCTION DAILY REACTION SUMMARY SCHEDULER
+// Add this to your ProductionChurchSMS class in app.js
+
+// INDUSTRIAL-GRADE 8 PM DAILY REACTION SUMMARY SYSTEM
+initializeReactionSummaryScheduler() {
+    const schedule = require('node-schedule');
+    
+    logger.info('🕒 Initializing production reaction summary scheduler...');
+    
+    // Schedule daily at 8:00 PM - Production cron job
+    const summaryJob = schedule.scheduleJob('0 20 * * *', async () => {
+        await this.processDailyReactionSummary();
+    });
+    
+    if (summaryJob) {
+        logger.info('✅ Daily reaction summary scheduler active - 8:00 PM daily');
+        
+        // Also schedule a cleanup job at 2 AM to remove old processed reactions
+        const cleanupJob = schedule.scheduleJob('0 2 * * *', async () => {
+            await this.cleanupProcessedReactions();
+        });
+        
+        if (cleanupJob) {
+            logger.info('✅ Reaction cleanup scheduler active - 2:00 AM daily');
+        }
+    } else {
+        logger.error('❌ Failed to initialize reaction summary scheduler');
+    }
+}
+
+// PRODUCTION DAILY REACTION SUMMARY PROCESSOR
+async processDailyReactionSummary() {
+    const startTime = Date.now();
+    logger.info('📊 Starting daily reaction summary processing...');
+    
+    try {
+        if (!this.dbManager.isConnected) {
+            logger.error('❌ Database not connected - skipping reaction summary');
+            return;
+        }
+
+        const today = new Date();
+        const summaryDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        
+        // Check if summary already exists for today
+        const existingSummary = await DailyReactionSummary.findOne({ 
+            summaryDate: summaryDate 
+        });
+        
+        if (existingSummary && existingSummary.summaryStatus === 'sent') {
+            logger.info('ℹ️ Daily summary already sent for today');
+            return;
+        }
+
+        // Get today's unprocessed reactions
+        const todayStart = new Date(summaryDate);
+        const todayEnd = new Date(summaryDate);
+        todayEnd.setHours(23, 59, 59, 999);
+        
+        const todaysReactions = await MessageReaction.find({
+            detectedAt: { $gte: todayStart, $lte: todayEnd },
+            processedForSummary: false
+        }).sort({ detectedAt: 1 });
+
+        if (todaysReactions.length === 0) {
+            logger.info('ℹ️ No reactions to summarize today');
+            await this.recordNoReactionsSummary(summaryDate);
+            return;
+        }
+
+        logger.info(`📊 Processing ${todaysReactions.length} reactions for daily summary`);
+
+        // Group reactions by target message
+        const reactionsByMessage = this.groupReactionsByMessage(todaysReactions);
+        
+        // Generate summary data
+        const summaryData = this.generateSummaryData(reactionsByMessage, summaryDate);
+        
+        // Create formatted summary text
+        const summaryText = this.formatDailySummaryText(summaryData);
+        
+        // Save summary to database
+        const savedSummary = await this.saveDailyReactionSummary(summaryData, summaryText);
+        
+        // Broadcast summary to congregation
+        const broadcastResult = await this.broadcastDailySummary(summaryText);
+        
+        // Update summary status and mark reactions as processed
+        await this.finalizeDailySummary(savedSummary._id, broadcastResult, todaysReactions);
+        
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('daily_reaction_summary', durationMs, true);
+        
+        logger.info(`✅ Daily reaction summary completed in ${(durationMs/1000).toFixed(2)}s`);
+        
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('daily_reaction_summary', durationMs, false, error.message);
+        
+        logger.error(`❌ Daily reaction summary failed: ${error.message}`);
+        await this.handleSummaryError(error);
+    }
+}
+
+// PRODUCTION REACTION GROUPING ENGINE
+groupReactionsByMessage(reactions) {
+    const messageGroups = new Map();
+    
+    reactions.forEach(reaction => {
+        const messageKey = reaction.targetMessage.toLowerCase().trim();
+        
+        if (!messageGroups.has(messageKey)) {
+            messageGroups.set(messageKey, {
+                originalMessage: reaction.targetMessage,
+                reactions: new Map(),
+                totalCount: 0
+            });
+        }
+        
+        const group = messageGroups.get(messageKey);
+        const emoji = reaction.emoji;
+        
+        if (!group.reactions.has(emoji)) {
+            group.reactions.set(emoji, 0);
+        }
+        
+        group.reactions.set(emoji, group.reactions.get(emoji) + 1);
+        group.totalCount++;
+    });
+    
+    // Convert to array and sort by total reaction count
+    return Array.from(messageGroups.values())
+        .sort((a, b) => b.totalCount - a.totalCount);
+}
+
+// PRODUCTION SUMMARY DATA GENERATOR
+generateSummaryData(reactionsByMessage, summaryDate) {
+    const settings = this.getReactionSummarySettings();
+    const threshold = settings.minimumReactionsThreshold;
+    const maxMessages = settings.maximumMessagesInSummary;
+    
+    // Filter messages that meet minimum reaction threshold
+    const qualifyingMessages = reactionsByMessage.filter(msg => 
+        msg.totalCount >= threshold
+    ).slice(0, maxMessages);
+    
+    let totalReactions = 0;
+    const processedMessages = qualifyingMessages.map(msg => {
+        const reactionArray = Array.from(msg.reactions.entries())
+            .sort((a, b) => b[1] - a[1]) // Sort by count descending
+            .map(([emoji, count]) => ({ emoji, count }));
+        
+        totalReactions += msg.totalCount;
+        
+        return {
+            targetMessage: msg.originalMessage.substring(0, 80), // Limit length
+            reactions: reactionArray,
+            totalReactionCount: msg.totalCount
+        };
+    });
+    
+    const topMessage = qualifyingMessages.length > 0 ? {
+        message: qualifyingMessages[0].originalMessage.substring(0, 100),
+        reactionCount: qualifyingMessages[0].totalCount
+    } : null;
+    
+    return {
+        summaryDate,
+        totalReactions,
+        totalMessages: qualifyingMessages.length,
+        reactionsByMessage: processedMessages,
+        topReactedMessage: topMessage,
+        summaryStatus: 'generated'
+    };
+}
+
+// PRODUCTION SUMMARY TEXT FORMATTER
+formatDailySummaryText(summaryData) {
+    if (summaryData.totalMessages === 0) {
+        return `📊 Daily Reactions Summary (${summaryData.summaryDate.toLocaleDateString()})\n\nNo messages received significant reactions today.`;
+    }
+    
+    const dateStr = summaryData.summaryDate.toLocaleDateString('en-US', { 
+        weekday: 'long', 
+        month: 'short', 
+        day: 'numeric' 
+    });
+    
+    let summaryText = `📊 DAILY REACTIONS SUMMARY (${dateStr})\n\n`;
+    
+    summaryData.reactionsByMessage.forEach((msg, index) => {
+        // Truncate long messages for clean display
+        const displayMessage = msg.targetMessage.length > 50 
+            ? msg.targetMessage.substring(0, 47) + "..."
+            : msg.targetMessage;
+            
+        summaryText += `"${displayMessage}"\n`;
+        
+        // Format reaction counts
+        const reactionStr = msg.reactions
+            .map(r => `${r.emoji} ${r.count}`)
+            .join('  ');
+        
+        summaryText += `${reactionStr}\n\n`;
+    });
+    
+    // Add totals
+    summaryText += `📈 ${summaryData.totalMessages} messages received ${summaryData.totalReactions} total reactions today`;
+    
+    if (summaryData.topReactedMessage) {
+        const topMsg = summaryData.topReactedMessage.message.length > 40
+            ? summaryData.topReactedMessage.message.substring(0, 37) + "..."
+            : summaryData.topReactedMessage.message;
+            
+        summaryText += `\n🏆 Most reacted: "${topMsg}" (${summaryData.topReactedMessage.reactionCount} reactions)`;
+    }
+    
+    return summaryText;
+}
+
+// PRODUCTION SUMMARY DATABASE STORAGE
+async saveDailyReactionSummary(summaryData, summaryText) {
+    try {
+        const summary = new DailyReactionSummary({
+            ...summaryData,
+            summaryText: summaryText
+        });
+        
+        const savedSummary = await summary.save();
+        logger.info(`✅ Daily summary saved to database: ${savedSummary._id}`);
+        
+        return savedSummary;
+        
+    } catch (error) {
+        logger.error(`❌ Failed to save daily summary: ${error.message}`);
+        throw error;
+    }
+}
+
+// PRODUCTION SUMMARY BROADCAST ENGINE
+async broadcastDailySummary(summaryText) {
+    try {
+        logger.info('📡 Broadcasting daily reaction summary to congregation...');
+        
+        const recipients = await this.getAllActiveMembers();
+        if (recipients.length === 0) {
+            logger.warn('❌ No active members found for summary broadcast');
+            return { success: false, error: 'No recipients' };
+        }
+        
+        const deliveryStats = {
+            sent: 0,
+            failed: 0,
+            errors: []
+        };
+        
+        // Send to all congregation members
+        const sendPromises = recipients.map(async (member) => {
+            try {
+                const result = await this.sendSMS(member.phone, summaryText);
+                
+                if (result.success) {
+                    deliveryStats.sent++;
+                    logger.info(`✅ Summary delivered to ${member.name}: ${result.sid}`);
+                } else {
+                    deliveryStats.failed++;
+                    deliveryStats.errors.push(`${member.name}: ${result.error}`);
+                    logger.error(`❌ Summary failed to ${member.name}: ${result.error}`);
+                }
+            } catch (error) {
+                deliveryStats.failed++;
+                deliveryStats.errors.push(`${member.name}: ${error.message}`);
+                logger.error(`❌ Summary delivery error to ${member.name}: ${error.message}`);
+            }
+        });
+        
+        await Promise.allSettled(sendPromises);
+        
+        logger.info(`📊 Summary broadcast completed: ${deliveryStats.sent} sent, ${deliveryStats.failed} failed`);
+        
+        return {
+            success: deliveryStats.sent > 0,
+            successCount: deliveryStats.sent,
+            failureCount: deliveryStats.failed,
+            errors: deliveryStats.errors
+        };
+        
+    } catch (error) {
+        logger.error(`❌ Summary broadcast failed: ${error.message}`);
+        return { success: false, error: error.message };
+    }
+}
+
+// PRODUCTION SUMMARY FINALIZATION
+async finalizeDailySummary(summaryId, broadcastResult, processedReactions) {
+    try {
+        // Update summary status
+        await DailyReactionSummary.findByIdAndUpdate(summaryId, {
+            summaryStatus: broadcastResult.success ? 'sent' : 'failed',
+            sentAt: new Date(),
+            'deliveryResults.successCount': broadcastResult.successCount || 0,
+            'deliveryResults.failureCount': broadcastResult.failureCount || 0
+        });
+        
+        // Mark all reactions as processed
+        const reactionIds = processedReactions.map(r => r._id);
+        await MessageReaction.updateMany(
+            { _id: { $in: reactionIds } },
+            { 
+                processedForSummary: true,
+                summaryDate: new Date()
+            }
+        );
+        
+        // Record analytics
+        await this.dbManager.recordAnalytic('daily_summary_sent', 1, 
+            `${processedReactions.length} reactions, ${broadcastResult.successCount} deliveries`);
+        
+        logger.info(`✅ Daily summary finalized: ${processedReactions.length} reactions processed`);
+        
+    } catch (error) {
+        logger.error(`❌ Failed to finalize daily summary: ${error.message}`);
+        throw error;
+    }
+}
+
+// PRODUCTION SETTINGS GETTER
+getReactionSummarySettings() {
+    // Default production settings - can be overridden by database settings
+    return {
+        minimumReactionsThreshold: 3,
+        maximumMessagesInSummary: 8,
+        includeReactorNames: false,
+        summaryFormat: 'compact'
+    };
+}
+
+// PRODUCTION ERROR HANDLER
+async handleSummaryError(error) {
+    try {
+        logger.error(`🚨 Daily summary system error: ${error.message}`);
+        
+        // Record critical error in analytics
+        await this.dbManager.recordAnalytic('daily_summary_error', 1, 
+            `Error: ${error.message}, Stack: ${error.stack?.substring(0, 200)}`);
+        
+        // Notify administrators about the failure
+        const adminMembers = await this.dbManager.getAllActiveMembers();
+        const admins = adminMembers.filter(member => member.isAdmin);
+        
+        if (admins.length > 0) {
+            const errorNotification = `🚨 SYSTEM ALERT\n\nDaily reaction summary failed at ${new Date().toLocaleString()}\n\nError: ${error.message}\n\nTech team has been notified.`;
+            
+            for (const admin of admins) {
+                try {
+                    await this.sendSMS(admin.phone, errorNotification);
+                    logger.info(`📧 Error notification sent to admin: ${admin.name}`);
+                } catch (notifyError) {
+                    logger.error(`❌ Failed to notify admin ${admin.name}: ${notifyError.message}`);
+                }
+            }
+        }
+        
+    } catch (handleError) {
+        logger.error(`❌ Error in error handler: ${handleError.message}`);
+    }
+}
+
+// PRODUCTION NO-REACTIONS SUMMARY RECORDER
+async recordNoReactionsSummary(summaryDate) {
+    try {
+        const noReactionsSummary = new DailyReactionSummary({
+            summaryDate: summaryDate,
+            totalReactions: 0,
+            totalMessages: 0,
+            reactionsByMessage: [],
+            topReactedMessage: null,
+            summaryStatus: 'sent',
+            summaryText: 'No reactions to summarize today',
+            sentAt: new Date(),
+            deliveryResults: {
+                successCount: 0,
+                failureCount: 0
+            }
+        });
+        
+        await noReactionsSummary.save();
+        logger.info('✅ No-reactions summary recorded for today');
+        
+        // Record analytics
+        await this.dbManager.recordAnalytic('daily_summary_no_reactions', 1, 
+            `Date: ${summaryDate.toLocaleDateString()}`);
+        
+    } catch (error) {
+        logger.error(`❌ Failed to record no-reactions summary: ${error.message}`);
+    }
+}
+
+// PRODUCTION REACTION CLEANUP SERVICE
+async cleanupProcessedReactions() {
+    const startTime = Date.now();
+    logger.info('🧹 Starting processed reaction cleanup...');
+    
+    try {
+        if (!this.dbManager.isConnected) {
+            logger.warn('❌ Database not connected - skipping reaction cleanup');
+            return;
+        }
+        
+        // Remove reactions older than 30 days that have been processed
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        
+        const deleteResult = await MessageReaction.deleteMany({
+            processedForSummary: true,
+            summaryDate: { $lt: thirtyDaysAgo }
+        });
+        
+        // Also cleanup old summary records (keep last 90 days)
+        const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+        
+        const summaryDeleteResult = await DailyReactionSummary.deleteMany({
+            summaryDate: { $lt: ninetyDaysAgo }
+        });
+        
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('reaction_cleanup', durationMs, true);
+        
+        logger.info(`✅ Reaction cleanup completed: ${deleteResult.deletedCount} reactions, ${summaryDeleteResult.deletedCount} summaries removed`);
+        
+        // Record cleanup analytics
+        await this.dbManager.recordAnalytic('reaction_cleanup_completed', deleteResult.deletedCount, 
+            `Summaries cleaned: ${summaryDeleteResult.deletedCount}, Duration: ${durationMs}ms`);
+        
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('reaction_cleanup', durationMs, false, error.message);
+        
+        logger.error(`❌ Reaction cleanup failed: ${error.message}`);
+    }
+}
+
+// PRODUCTION ADMIN COMMAND: REACTION SUMMARY CONTROLS
+async handleReactionSummaryCommand(adminPhone, commandText) {
+    const startTime = Date.now();
+    logger.info(`📊 Admin REACTION SUMMARY command from ${adminPhone}: ${commandText}`);
+
+    try {
+        // Verify admin privileges
+        const admin = await this.getMemberInfo(adminPhone);
+        if (!admin || !admin.isAdmin) {
+            logger.warn(`❌ Non-admin attempted REACTION SUMMARY command: ${adminPhone}`);
+            return "❌ Access denied. Only church administrators can manage reaction summaries.";
+        }
+
+        const parts = commandText.trim().split(/\s+/);
+        const subCommand = parts[1]?.toUpperCase() || 'STATUS';
+
+        switch (subCommand) {
+            case 'STATUS':
+                return await this.getReactionSummaryStatus();
+            
+            case 'SEND':
+                return await this.forceDailySummary(admin.name);
+            
+            case 'DISABLE':
+                return await this.disableReactionSummaries(admin.name);
+            
+            case 'ENABLE':
+                return await this.enableReactionSummaries(admin.name);
+            
+            case 'STATS':
+                return await this.getReactionStatistics();
+            
+            default:
+                return `❌ Unknown reaction summary command: ${subCommand}\n\n📋 Available commands:\n• REACTION STATUS - Show summary system status\n• REACTION SEND - Force send today's summary now\n• REACTION DISABLE - Disable daily summaries\n• REACTION ENABLE - Enable daily summaries\n• REACTION STATS - View reaction statistics`;
+        }
+
+    } catch (error) {
+        const durationMs = Date.now() - startTime;
+        await this.recordPerformanceMetric('reaction_summary_command', durationMs, false, error.message);
+        
+        logger.error(`❌ REACTION SUMMARY command error: ${error.message}`);
+        return "❌ System error occurred managing reaction summaries.\n\n💡 Tech team has been notified.";
+    }
+}
+
+// PRODUCTION SUMMARY STATUS CHECKER
+async getReactionSummaryStatus() {
+    try {
+        const today = new Date();
+        const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        
+        // Check today's summary status
+        const todaySummary = await DailyReactionSummary.findOne({ 
+            summaryDate: todayStart 
+        });
+        
+        // Count today's reactions
+        const todayEnd = new Date(todayStart);
+        todayEnd.setHours(23, 59, 59, 999);
+        
+        const todayReactionCount = await MessageReaction.countDocuments({
+            detectedAt: { $gte: todayStart, $lte: todayEnd },
+            processedForSummary: false
+        });
+        
+        // Get recent summary history
+        const recentSummaries = await DailyReactionSummary.find({})
+            .sort({ summaryDate: -1 })
+            .limit(7);
+        
+        let statusMessage = `📊 REACTION SUMMARY SYSTEM STATUS\n\n`;
+        statusMessage += `📅 Today (${todayStart.toLocaleDateString()}):\n`;
+        
+        if (todaySummary) {
+            statusMessage += `   Status: ${todaySummary.summaryStatus.toUpperCase()}\n`;
+            if (todaySummary.sentAt) {
+                statusMessage += `   Sent: ${todaySummary.sentAt.toLocaleTimeString()}\n`;
+            }
+            statusMessage += `   Messages: ${todaySummary.totalMessages}\n`;
+            statusMessage += `   Reactions: ${todaySummary.totalReactions}\n`;
+        } else {
+            statusMessage += `   Status: PENDING\n`;
+        }
+        
+        statusMessage += `\n⏱️ Pending reactions today: ${todayReactionCount}\n`;
+        statusMessage += `🕒 Next summary: 8:00 PM daily\n`;
+        
+        if (recentSummaries.length > 0) {
+            statusMessage += `\n📈 Recent Summary History:\n`;
+            recentSummaries.slice(0, 5).forEach(summary => {
+                const date = summary.summaryDate.toLocaleDateString();
+                const status = summary.summaryStatus === 'sent' ? '✅' : '❌';
+                statusMessage += `   ${status} ${date}: ${summary.totalReactions} reactions\n`;
+            });
+        }
+        
+        return statusMessage;
+        
+    } catch (error) {
+        logger.error(`❌ Error getting reaction summary status: ${error.message}`);
+        return "❌ Error retrieving reaction summary status";
+    }
+}
+
+// PRODUCTION FORCE SUMMARY SENDER
+async forceDailySummary(adminName) {
+    try {
+        logger.info(`🔧 Admin ${adminName} forcing daily summary send`);
+        
+        // Run the daily summary process immediately
+        await this.processDailyReactionSummary();
+        
+        // Record the forced action
+        await this.dbManager.recordAnalytic('daily_summary_forced', 1, 
+            `Forced by admin: ${adminName}`);
+        
+        return `✅ Daily reaction summary sent immediately by admin command.\n\n💡 Regular 8 PM schedule remains active.`;
+        
+    } catch (error) {
+        logger.error(`❌ Force daily summary failed: ${error.message}`);
+        return `❌ Failed to send daily summary: ${error.message}`;
+    }
+}
+
+// PRODUCTION REACTION STATISTICS
+async getReactionStatistics() {
+    try {
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        
+        // Get reaction counts by emoji for last 30 days
+        const emojiStats = await MessageReaction.aggregate([
+            { $match: { detectedAt: { $gte: thirtyDaysAgo } } },
+            { $group: { _id: '$emoji', count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 10 }
+        ]);
+        
+        // Get top reactors
+        const topReactors = await MessageReaction.aggregate([
+            { $match: { detectedAt: { $gte: thirtyDaysAgo } } },
+            { $group: { _id: '$reactorName', count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 5 }
+        ]);
+        
+        // Get recent summary performance
+        const summaryPerformance = await DailyReactionSummary.aggregate([
+            { $match: { summaryDate: { $gte: thirtyDaysAgo } } },
+            { $group: {
+                _id: null,
+                totalSummaries: { $sum: 1 },
+                successfulSummaries: { 
+                    $sum: { $cond: [{ $eq: ['$summaryStatus', 'sent'] }, 1, 0] }
+                },
+                averageReactions: { $avg: '$totalReactions' },
+                totalReactions: { $sum: '$totalReactions' }
+            }}
+        ]);
+        
+        let statsMessage = `📊 REACTION STATISTICS (Last 30 Days)\n\n`;
+        
+        if (emojiStats.length > 0) {
+            statsMessage += `🎯 Top Reactions:\n`;
+            emojiStats.slice(0, 5).forEach((stat, index) => {
+                statsMessage += `   ${index + 1}. ${stat._id} - ${stat.count} times\n`;
+            });
+        }
+        
+        if (topReactors.length > 0) {
+            statsMessage += `\n👥 Most Active Reactors:\n`;
+            topReactors.forEach((reactor, index) => {
+                statsMessage += `   ${index + 1}. ${reactor._id} - ${reactor.count} reactions\n`;
+            });
+        }
+        
+        if (summaryPerformance.length > 0) {
+            const perf = summaryPerformance[0];
+            const successRate = ((perf.successfulSummaries / perf.totalSummaries) * 100).toFixed(1);
+            
+            statsMessage += `\n📈 Summary Performance:\n`;
+            statsMessage += `   Total summaries sent: ${perf.successfulSummaries}/${perf.totalSummaries}\n`;
+            statsMessage += `   Success rate: ${successRate}%\n`;
+            statsMessage += `   Average reactions per day: ${Math.round(perf.averageReactions)}\n`;
+            statsMessage += `   Total reactions processed: ${perf.totalReactions}\n`;
+        }
+        
+        return statsMessage;
+        
+    } catch (error) {
+        logger.error(`❌ Error getting reaction statistics: ${error.message}`);
+        return "❌ Error retrieving reaction statistics";
+    }
+}
+
+}
+
+
 
 
 async function setupProductionCongregation() {

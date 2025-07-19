@@ -1,8 +1,198 @@
-
+// ADD THESE IMPORTS at the top with your existing ones
+const {
+    Group,
+    Member,
+    BroadcastMessage,
+    MediaFile,
+    DeliveryLog,
+    SystemAnalytics,
+    PerformanceMetrics,
+    MessageReaction,           // NEW
+    DailyReactionSummary,      // NEW  
+    ReactionSummarySettings    // NEW
+} = require('./models');
 
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
+// PRODUCTION REACTION MODELS
+// Add this to your models.js file (after existing schemas)
+
+// Message Reaction Schema - Industrial Grade
+const messageReactionSchema = new Schema({
+    reactorPhone: {
+        type: String,
+        required: true,
+        index: true
+    },
+    reactorName: {
+        type: String,
+        required: true
+    },
+    emoji: {
+        type: String,
+        required: true,
+        index: true
+    },
+    targetMessage: {
+        type: String,
+        required: true,
+        maxlength: 200
+    },
+    reactionType: {
+        type: String,
+        enum: ['iphone_reaction', 'android_reaction', 'direct_emoji', 'unknown'],
+        required: true,
+        index: true
+    },
+    originalReactionText: {
+        type: String,
+        required: true
+    },
+    processedForSummary: {
+        type: Boolean,
+        default: false,
+        index: true
+    },
+    summaryDate: {
+        type: Date,
+        index: true
+    },
+    detectedAt: {
+        type: Date,
+        default: Date.now,
+        index: true
+    }
+}, {
+    timestamps: true,
+    collection: 'message_reactions'
+});
+
+// Daily Reaction Summary Schema - Production Ready
+const dailyReactionSummarySchema = new Schema({
+    summaryDate: {
+        type: Date,
+        required: true,
+        index: true
+    },
+    totalReactions: {
+        type: Number,
+        required: true,
+        default: 0
+    },
+    totalMessages: {
+        type: Number,
+        required: true,
+        default: 0
+    },
+    reactionsByMessage: [{
+        targetMessage: {
+            type: String,
+            required: true,
+            maxlength: 100
+        },
+        reactions: [{
+            emoji: {
+                type: String,
+                required: true
+            },
+            count: {
+                type: Number,
+                required: true,
+                min: 1
+            }
+        }],
+        totalReactionCount: {
+            type: Number,
+            required: true,
+            default: 0
+        }
+    }],
+    topReactedMessage: {
+        message: String,
+        reactionCount: {
+            type: Number,
+            default: 0
+        }
+    },
+    summaryStatus: {
+        type: String,
+        enum: ['pending', 'generated', 'sent', 'failed'],
+        default: 'pending',
+        index: true
+    },
+    summaryText: {
+        type: String
+    },
+    sentAt: {
+        type: Date
+    },
+    deliveryResults: {
+        successCount: {
+            type: Number,
+            default: 0
+        },
+        failureCount: {
+            type: Number,
+            default: 0
+        }
+    }
+}, {
+    timestamps: true,
+    collection: 'daily_reaction_summaries'
+});
+
+// Reaction Summary Settings Schema - Admin Configuration
+const reactionSummarySettingsSchema = new Schema({
+    isEnabled: {
+        type: Boolean,
+        default: true
+    },
+    summaryTime: {
+        hour: {
+            type: Number,
+            min: 0,
+            max: 23,
+            default: 20 // 8 PM
+        },
+        minute: {
+            type: Number,
+            min: 0,
+            max: 59,
+            default: 0
+        }
+    },
+    minimumReactionsThreshold: {
+        type: Number,
+        min: 1,
+        default: 3
+    },
+    maximumMessagesInSummary: {
+        type: Number,
+        min: 1,
+        max: 20,
+        default: 10
+    },
+    includeReactorNames: {
+        type: Boolean,
+        default: false
+    },
+    summaryFormat: {
+        type: String,
+        enum: ['compact', 'detailed', 'minimal'],
+        default: 'compact'
+    },
+    lastModifiedBy: {
+        type: String
+    },
+    lastModifiedAt: {
+        type: Date,
+        default: Date.now
+    }
+}, {
+    timestamps: true,
+    collection: 'reaction_summary_settings'
+});
 
 
 
@@ -314,6 +504,18 @@ deliveryLogSchema.index({ messageId: 1, deliveryStatus: 1 });
 systemAnalyticsSchema.index({ metricName: 1, recordedAt: -1 });
 performanceMetricsSchema.index({ operationType: 1, recordedAt: -1 });
 
+// Optimized indexes for production performance
+messageReactionSchema.index({ detectedAt: -1, processedForSummary: 1 });
+messageReactionSchema.index({ summaryDate: 1, processedForSummary: 1 });
+messageReactionSchema.index({ reactorPhone: 1, detectedAt: -1 });
+messageReactionSchema.index({ emoji: 1, detectedAt: -1 });
+
+dailyReactionSummarySchema.index({ summaryDate: -1 });
+dailyReactionSummarySchema.index({ summaryStatus: 1, summaryDate: -1 });
+dailyReactionSummarySchema.index({ sentAt: -1 });
+
+
+
 // Create and export models
 const Group = mongoose.model('Group', groupSchema);
 const Member = mongoose.model('Member', memberSchema);
@@ -323,6 +525,14 @@ const DeliveryLog = mongoose.model('DeliveryLog', deliveryLogSchema);
 const SystemAnalytics = mongoose.model('SystemAnalytics', systemAnalyticsSchema);
 const PerformanceMetrics = mongoose.model('PerformanceMetrics', performanceMetricsSchema);
 
+// Export the new models (add these to your existing exports)
+const MessageReaction = mongoose.model('MessageReaction', messageReactionSchema);
+const DailyReactionSummary = mongoose.model('DailyReactionSummary', dailyReactionSummarySchema);
+const ReactionSummarySettings = mongoose.model('ReactionSummarySettings', reactionSummarySettingsSchema);
+
+
+
+
 module.exports = {
     Group,
     Member,
@@ -331,5 +541,8 @@ module.exports = {
     DeliveryLog,
     SystemAnalytics,
     PerformanceMetrics,
+    MessageReaction,           // NEW
+    DailyReactionSummary,      // NEW  
+    ReactionSummarySettings    // NEW
 
 };

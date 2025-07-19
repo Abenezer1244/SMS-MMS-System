@@ -18,8 +18,25 @@ const {
     MediaFile,
     DeliveryLog,
     SystemAnalytics,
-    PerformanceMetrics
+    PerformanceMetrics,
+    MessageReaction,           // NEW
+    DailyReactionSummary,      // NEW  
+    ReactionSummarySettings    // NEW
 } = require('./models');
+
+// Initialize default reaction summary settings
+const defaultSettings = new ReactionSummarySettings({
+    isEnabled: true,
+    summaryTime: { hour: 20, minute: 0 }, // 8:00 PM
+    minimumReactionsThreshold: 3,
+    maximumMessagesInSummary: 8,
+    includeReactorNames: false,
+    summaryFormat: 'compact',
+    lastModifiedBy: 'System',
+    lastModifiedAt: new Date()
+});
+
+await defaultSettings.save();
 
 // Load environment variables
 require('dotenv').config();
@@ -702,6 +719,8 @@ class ProductionSetup {
         console.log('🎯 READY FOR YOUR CONGREGATION - NO TEST DATA INCLUDED!');
     }
 
+    
+
     async run() {
         try {
             console.log('🚀 Starting clean production setup with MongoDB...\n');
@@ -715,6 +734,10 @@ class ProductionSetup {
             await this.validateEnvironment();
             await this.generateSetupReport();
             await this.displayNextSteps();
+            // Add to your setup.js or run manually
+            await MessageReaction.createIndexes();
+            await DailyReactionSummary.createIndexes();
+            await ReactionSummarySettings.createIndexes();
             
         } catch (error) {
             console.error('\n❌ PRODUCTION SETUP FAILED');
