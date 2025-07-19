@@ -1576,6 +1576,9 @@ async generateHelpMessage(member) {
 • REMOVE +1234567890 Name - Remove member
 • ADMIN +1234567890 Name - Grant admin access
 • DEMOTE +1234567890 Name - Remove admin access
+• REACTION STATUS
+• REACTION SEND
+• REACTION STATS
 • CLEANUP STATUS - Database health check
 • WIPE CONFIRM - Emergency database reset`;
         }
