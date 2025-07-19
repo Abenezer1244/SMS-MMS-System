@@ -2755,7 +2755,7 @@ async cleanupOrphanedData() {
 
 // COMPLETE FIXED handleIncomingMessage METHOD
 // Replace your existing handleIncomingMessage method in app.js with this
-
+// UPDATED handleIncomingMessage - Add debugging
 async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
     logger.info(`📨 ENHANCED: Incoming message from ${fromPhone}`);
 
@@ -2784,9 +2784,12 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
 
         logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
 
+        // ADD DEBUGGING LOG for potential missed reactions
+        await this.logPotentialReaction(messageBody, fromPhone, member.name);
+
         // STEP 1: Check for reactions FIRST - before any other processing
         if (await this.isReactionMessage(messageBody)) {
-            logger.info(`🔇 Reaction detected from ${member.name}: "${messageBody}"`);
+            logger.info(`🔇 REACTION DETECTED AND BLOCKED from ${member.name}: "${messageBody}"`);
             await this.storeReactionSilently(messageBody, fromPhone, member.name);
             return null; // Return null to prevent any broadcast
         }
@@ -2827,7 +2830,7 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
         }
 
         // STEP 5: Regular message broadcasting
-        logger.info('📡 Processing regular message broadcast...');
+        logger.info(`📡 REGULAR MESSAGE BROADCAST: "${messageBody}"`);
         return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
         
     } catch (error) {
@@ -2842,69 +2845,113 @@ async isReactionMessage(messageBody) {
         // Trim the message to handle any whitespace
         const trimmedMessage = messageBody.trim();
         
-        logger.info(`🔍 Checking if message is reaction: "${trimmedMessage}"`);
+        logger.info(`🔍 DETAILED CHECK: "${trimmedMessage}"`);
 
-        // 1. Check for single emoji reactions (most common)
+        // 1. Single emoji reactions (works for both platforms)
         const singleEmojiPattern = /^(❤️|😂|👍|🙏|😍|🎉|👏|🔥|💯|😢|😮|🤔|😡|👎|😭|🥰|💪|🎊|🌟|⭐|✨|💝|🙌|👌|✅|‼️|⚠️|🆘|💔|💕|💖|💗|💘|💙|💚|💛|💜|🖤|🤍|🤎|💋|💯|💫|⭐|🌟|✨|💥|💦|💨)$/;
         if (singleEmojiPattern.test(trimmedMessage)) {
-            logger.info(`✅ Detected single emoji reaction: ${trimmedMessage}`);
+            logger.info(`✅ SINGLE EMOJI REACTION: ${trimmedMessage}`);
             return true;
         }
 
-        // 2. Check for iPhone-style reactions (improved patterns)
+        // 2. iPhone-style reactions (comprehensive patterns)
         const iphonePatterns = [
-            // With quotes
             /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+".+"/i,
             /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+'.+'/i,
-            
-            // Without quotes (common iPhone pattern)
-            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+.+/i,
-            
-            // Specific patterns we see in your screenshots
-            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+"[^"]*"$/i,
-            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+\S.*$/i
+            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+.+/i
         ];
 
         for (const pattern of iphonePatterns) {
             if (pattern.test(trimmedMessage)) {
-                logger.info(`✅ Detected iPhone reaction: ${trimmedMessage}`);
+                logger.info(`✅ IPHONE REACTION: ${trimmedMessage}`);
                 return true;
             }
         }
 
-        // 3. Check for Android-style reactions
+        // 3. COMPREHENSIVE Android-style reactions (ALL possible patterns)
         const androidPatterns = [
-            /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)\s+to\s+".+"/i,
-            /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)\s+to\s+'.+'/i,
-            /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)\s+to\s+.+/i
+            // Standard patterns with quotes
+            /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯|😭|🥰|💪|🎊|🌟|⭐|✨|💝|🙌|👌|✅|‼️|⚠️|💔|💕|💖|💗|💘|💙|💚|💛|💜|🖤|🤍|🤎|💋|💫|💥|💦|💨)\s+to\s+".+"/i,
+            /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯|😭|🥰|💪|🎊|🌟|⭐|✨|💝|🙌|👌|✅|‼️|⚠️|💔|💕|💖|💗|💘|💙|💚|💛|💜|🖤|🤍|🤎|💋|💫|💥|💦|💨)\s+to\s+'.+'/i,
+            
+            // Without quotes (common Android pattern)
+            /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯|😭|🥰|💪|🎊|🌟|⭐|✨|💝|🙌|👌|✅|‼️|⚠️|💔|💕|💖|💗|💘|💙|💚|💛|💜|🖤|🤍|🤎|💋|💫|💥|💦|💨)\s+to\s+.+/i,
+            
+            // Different Android formats
+            /^Reacted\s+with\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯|😭|🥰|💪|🎊|🌟|⭐|✨|💝|🙌|👌|✅|‼️|⚠️|💔|💕|💖|💗|💘|💙|💚|💛|💜|🖤|🤍|🤎|💋|💫|💥|💦|💨)/i,
+            
+            // Simplified Android patterns
+            /^(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯|😭|🥰|💪|🎊|🌟|⭐|✨|💝|🙌|👌|✅|‼️|⚠️|💔|💕|💖|💗|💘|💙|💚|💛|💜|🖤|🤍|🤎|💋|💫|💥|💦|💨)\s+to\s+.+/i,
+            
+            // Any message that starts with "Reacted"
+            /^Reacted\s+/i
         ];
 
         for (const pattern of androidPatterns) {
             if (pattern.test(trimmedMessage)) {
-                logger.info(`✅ Detected Android reaction: ${trimmedMessage}`);
+                logger.info(`✅ ANDROID REACTION: ${trimmedMessage}`);
                 return true;
             }
         }
 
-        // 4. Check for specific reaction words that indicate reactions
+        // 4. CATCH-ALL: Any message containing reaction keywords
         const reactionKeywords = [
-            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned|Reacted)/i
+            /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s/i,
+            /^Reacted\s/i,
+            /\sreacted\s/i,
+            /\sloved\s/i,
+            /\sliked\s/i
         ];
 
         for (const keyword of reactionKeywords) {
             if (keyword.test(trimmedMessage)) {
-                logger.info(`✅ Detected reaction by keyword: ${trimmedMessage}`);
+                logger.info(`✅ REACTION KEYWORD DETECTED: ${trimmedMessage}`);
                 return true;
             }
         }
 
-        logger.info(`❌ Not a reaction: "${trimmedMessage}"`);
+        // 5. EMERGENCY PATTERN: Common reaction phrases
+        const emergencyPatterns = [
+            /reacted.*to.*"/i,
+            /reacted.*to.*/i,
+            /loved.*"/i,
+            /liked.*"/i,
+            /laughed.*at.*"/i
+        ];
+
+        for (const pattern of emergencyPatterns) {
+            if (pattern.test(trimmedMessage)) {
+                logger.info(`✅ EMERGENCY REACTION PATTERN: ${trimmedMessage}`);
+                return true;
+            }
+        }
+
+        logger.info(`❌ NOT A REACTION: "${trimmedMessage}"`);
         return false;
 
     } catch (error) {
         logger.error(`❌ Reaction detection error: ${error.message}`);
-        // If there's an error, assume it's not a reaction to avoid blocking regular messages
         return false;
+    }
+}
+
+// DEBUGGING METHOD - Add this to help identify missed patterns
+async logPotentialReaction(messageBody, fromPhone, senderName) {
+    try {
+        const trimmedMessage = messageBody.trim().toLowerCase();
+        
+        // Log anything that might be a reaction
+        const suspiciousWords = ['react', 'love', 'like', 'laugh', 'emphasiz', 'question', 'dislik'];
+        const containsSuspiciousWord = suspiciousWords.some(word => trimmedMessage.includes(word));
+        
+        if (containsSuspiciousWord) {
+            logger.warn(`🚨 POTENTIAL MISSED REACTION from ${senderName}: "${messageBody}"`);
+            logger.warn(`🚨 Message length: ${messageBody.length} characters`);
+            logger.warn(`🚨 Contains emoji: ${/[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/u.test(messageBody)}`);
+        }
+        
+    } catch (error) {
+        // Ignore errors in debugging
     }
 }
 
