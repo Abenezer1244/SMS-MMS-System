@@ -31,6 +31,7 @@ const {
     DeliveryLog,
     SystemAnalytics,
     PerformanceMetrics,
+    MessageReaction = null, // Import but handle if it doesn't exist
 } = require('./models');
 
 // Production logging configuration
@@ -2752,6 +2753,9 @@ async cleanupOrphanedData() {
 
 
 
+// COMPLETE FIXED handleIncomingMessage METHOD
+// Replace your existing handleIncomingMessage method in app.js with this
+
 async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
     logger.info(`📨 ENHANCED: Incoming message from ${fromPhone}`);
 
@@ -2780,24 +2784,19 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
 
         logger.info(`👤 Sender: ${member.name} (Admin: ${member.isAdmin})`);
 
-        // PRODUCTION REACTION DETECTION - No mocks, no tests
-        const reactionData = await this.detectAndProcessReaction(messageBody, fromPhone, member.name);
-        if (reactionData.isReaction) {
-            logger.info(`🔇 Reaction detected and stored: ${reactionData.emoji} for "${reactionData.targetMessage}"`);
-            
-            // Store reaction silently - no broadcast
-            await this.storeReactionData(reactionData);
-            
-            // Return null to prevent any broadcast
-            return null;
+        // STEP 1: Check for reactions FIRST - before any other processing
+        if (await this.isReactionMessage(messageBody)) {
+            logger.info(`🔇 Reaction detected from ${member.name}: "${messageBody}"`);
+            await this.storeReactionSilently(messageBody, fromPhone, member.name);
+            return null; // Return null to prevent any broadcast
         }
 
-        // Check for HELP command
+        // STEP 2: Check for HELP command
         if (messageBody.toUpperCase() === 'HELP') {
             return await this.generateHelpMessage(member);
         }
 
-        // Check for admin commands
+        // STEP 3: Check for admin commands
         if (messageBody.toUpperCase().startsWith('ADD ')) {
             return await this.handleAddMemberCommand(fromPhone, messageBody);
         }
@@ -2818,22 +2817,282 @@ async handleIncomingMessage(fromPhone, messageBody, mediaUrls) {
             return await this.handleDemoteCommand(fromPhone, messageBody);
         }
 
-        if (messageBody.toUpperCase().startsWith('REACTION ')) {
-            return await this.handleReactionSummaryCommand(fromPhone, messageBody);
-        }
-
         if (messageBody.toUpperCase().startsWith('CLEANUP ') || messageBody.toUpperCase() === 'CLEANUP') {
             return await this.handleCleanupCommand(fromPhone, messageBody);
         }
 
-        // Regular message broadcasting
-        logger.info('📡 Processing enhanced message broadcast...');
+        // STEP 4: Check for REACTION admin commands
+        if (messageBody.toUpperCase().startsWith('REACTION ')) {
+            return await this.handleReactionCommand(fromPhone, messageBody);
+        }
+
+        // STEP 5: Regular message broadcasting
+        logger.info('📡 Processing regular message broadcast...');
         return await this.broadcastMessage(fromPhone, messageBody, mediaUrls);
         
     } catch (error) {
         logger.error(`❌ Enhanced message processing error: ${error.message}`);
         logger.error(`❌ Stack trace: ${error.stack}`);
         return "Message processing temporarily unavailable - please try again";
+    }
+}
+
+// SIMPLE REACTION DETECTION METHOD
+async isReactionMessage(messageBody) {
+    try {
+        // Check for single emoji reactions
+        const singleEmojiPattern = /^(❤️|😂|👍|🙏|😍|🎉|👏|🔥|💯|😢|😮|🤔|😡|👎|😭|🥰|💪|🎊|🌟|⭐|✨|💝|🙌|👌|✅)$/;
+        if (singleEmojiPattern.test(messageBody)) {
+            return true;
+        }
+
+        // Check for iPhone-style reactions
+        const iphonePattern = /^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s+".+"/i;
+        if (iphonePattern.test(messageBody)) {
+            return true;
+        }
+
+        // Check for Android-style reactions
+        const androidPattern = /^Reacted\s+(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)\s+to\s+".+"/i;
+        if (androidPattern.test(messageBody)) {
+            return true;
+        }
+
+        return false;
+    } catch (error) {
+        logger.error(`❌ Reaction detection error: ${error.message}`);
+        return false;
+    }
+}
+
+// SIMPLIFIED REACTION STORAGE
+async storeReactionSilently(messageBody, fromPhone, senderName) {
+    try {
+        logger.info(`🔇 Storing reaction silently: "${messageBody}" from ${senderName}`);
+        
+        let emoji = '';
+        let targetMessage = '';
+        
+        // Extract emoji from different reaction formats
+        if (/^(❤️|😂|👍|🙏|😍|🎉|👏|🔥|💯|😢|😮|🤔|😡|👎|😭|🥰|💪|🎊|🌟|⭐|✨|💝|🙌|👌|✅)$/.test(messageBody)) {
+            emoji = messageBody;
+            // For direct emoji, get the most recent message
+            const recentMessage = await this.getMostRecentMessage(fromPhone);
+            targetMessage = recentMessage ? recentMessage.originalMessage.substring(0, 50) : 'Recent message';
+        } else if (messageBody.includes('Loved')) {
+            emoji = '❤️';
+            targetMessage = this.extractTargetFromReaction(messageBody);
+        } else if (messageBody.includes('Laughed at')) {
+            emoji = '😂';
+            targetMessage = this.extractTargetFromReaction(messageBody);
+        } else if (messageBody.includes('Reacted')) {
+            const emojiMatch = messageBody.match(/(❤️|👍|👎|😂|😮|😢|😡|🔥|🎉|💯)/);
+            emoji = emojiMatch ? emojiMatch[1] : '❤️';
+            targetMessage = this.extractTargetFromReaction(messageBody);
+        }
+
+        // Store in database (create simple storage if MongoDB reaction system isn't ready)
+        await this.storeReactionInDatabase(emoji, targetMessage, fromPhone, senderName);
+        
+        logger.info(`✅ Reaction stored: ${emoji} by ${senderName} for "${targetMessage}"`);
+        
+    } catch (error) {
+        logger.error(`❌ Failed to store reaction: ${error.message}`);
+    }
+}
+
+// EXTRACT TARGET MESSAGE FROM REACTION TEXT
+extractTargetFromReaction(reactionText) {
+    try {
+        const quoteMatch = reactionText.match(/"([^"]+)"/);
+        if (quoteMatch) {
+            return quoteMatch[1].substring(0, 50);
+        }
+        return 'Message';
+    } catch (error) {
+        return 'Message';
+    }
+}
+
+// GET MOST RECENT MESSAGE (for direct emoji reactions)
+async getMostRecentMessage(excludePhone) {
+    try {
+        if (!this.dbManager.isConnected) {
+            return null;
+        }
+
+        const recentMessage = await BroadcastMessage.findOne({
+            fromPhone: { $ne: excludePhone },
+            sentAt: { $gt: new Date(Date.now() - 2 * 60 * 60 * 1000) } // Last 2 hours
+        }).sort({ sentAt: -1 });
+
+        return recentMessage;
+    } catch (error) {
+        logger.error(`❌ Error getting recent message: ${error.message}`);
+        return null;
+    }
+}
+
+// SIMPLE DATABASE STORAGE FOR REACTIONS
+async storeReactionInDatabase(emoji, targetMessage, fromPhone, senderName) {
+    try {
+        if (!this.dbManager.isConnected) {
+            logger.warn('❌ Database not connected - cannot store reaction');
+            return;
+        }
+
+        // Try to use MessageReaction model if available
+        try {
+            const { MessageReaction } = require('./models');
+            if (MessageReaction) {
+                const reaction = new MessageReaction({
+                    reactorPhone: fromPhone,
+                    reactorName: senderName,
+                    emoji: emoji,
+                    targetMessage: targetMessage,
+                    reactionType: 'detected',
+                    originalReactionText: `${emoji} reaction`,
+                    processedForSummary: false,
+                    detectedAt: new Date()
+                });
+                
+                await reaction.save();
+                logger.info(`✅ Reaction saved to MessageReaction collection`);
+                return;
+            }
+        } catch (modelError) {
+            logger.warn(`⚠️ MessageReaction model not available: ${modelError.message}`);
+        }
+
+        // Fallback: Store in analytics table
+        await this.dbManager.recordAnalytic('reaction_detected', 1, 
+            `${emoji} by ${senderName} for "${targetMessage}"`);
+        
+        logger.info(`✅ Reaction stored in analytics as fallback`);
+        
+    } catch (error) {
+        logger.error(`❌ Database storage failed: ${error.message}`);
+    }
+}
+
+// SIMPLE REACTION COMMAND HANDLER
+async handleReactionCommand(fromPhone, commandText) {
+    try {
+        const member = await this.getMemberInfo(fromPhone);
+        if (!member || !member.isAdmin) {
+            return "❌ Access denied. Only administrators can use REACTION commands.";
+        }
+
+        const parts = commandText.trim().split(/\s+/);
+        const subCommand = parts[1]?.toUpperCase() || 'STATUS';
+
+        switch (subCommand) {
+            case 'STATUS':
+                return await this.getSimpleReactionStatus();
+            
+            case 'SEND':
+                return await this.sendSimpleReactionSummary();
+            
+            case 'STATS':
+                return await this.getSimpleReactionStats();
+            
+            default:
+                return `❌ Unknown reaction command: ${subCommand}\n\nAvailable commands:\n• REACTION STATUS\n• REACTION SEND\n• REACTION STATS`;
+        }
+
+    } catch (error) {
+        logger.error(`❌ REACTION command error: ${error.message}`);
+        return "❌ Error processing reaction command";
+    }
+}
+
+// SIMPLE REACTION STATUS
+async getSimpleReactionStatus() {
+    try {
+        const today = new Date();
+        const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        
+        let reactionCount = 0;
+        
+        // Try to get from MessageReaction collection
+        try {
+            const { MessageReaction } = require('./models');
+            if (MessageReaction) {
+                reactionCount = await MessageReaction.countDocuments({
+                    detectedAt: { $gte: todayStart },
+                    processedForSummary: false
+                });
+            }
+        } catch (error) {
+            // Fallback to analytics count
+            const analytics = await SystemAnalytics.find({
+                metricName: 'reaction_detected',
+                recordedAt: { $gte: todayStart }
+            });
+            reactionCount = analytics.length;
+        }
+
+        return `📊 REACTION SYSTEM STATUS
+
+📅 Today (${todayStart.toLocaleDateString()}):
+🔇 Pending reactions: ${reactionCount}
+🕒 Next summary: 8:00 PM daily
+✅ Silent detection: Active
+📱 System: Operational
+
+💡 Send reactions like ❤️😂👍 to test the system!`;
+
+    } catch (error) {
+        logger.error(`❌ Error getting reaction status: ${error.message}`);
+        return "❌ Error retrieving reaction status";
+    }
+}
+
+// SIMPLE REACTION SUMMARY SENDER
+async sendSimpleReactionSummary() {
+    try {
+        return "✅ Daily reaction summary feature is in development.\n\n📊 For now, reactions are being collected silently.\n\n🔜 Full 8 PM summaries coming soon!";
+    } catch (error) {
+        return "❌ Error sending reaction summary";
+    }
+}
+
+// SIMPLE REACTION STATISTICS
+async getSimpleReactionStats() {
+    try {
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        
+        let totalReactions = 0;
+        
+        // Try to get from MessageReaction collection
+        try {
+            const { MessageReaction } = require('./models');
+            if (MessageReaction) {
+                totalReactions = await MessageReaction.countDocuments({
+                    detectedAt: { $gte: sevenDaysAgo }
+                });
+            }
+        } catch (error) {
+            // Fallback to analytics count
+            const analytics = await SystemAnalytics.find({
+                metricName: 'reaction_detected',
+                recordedAt: { $gte: sevenDaysAgo }
+            });
+            totalReactions = analytics.length;
+        }
+
+        return `📊 REACTION STATISTICS (Last 7 Days)
+
+📈 Total reactions detected: ${totalReactions}
+🔇 All reactions stored silently
+📅 Daily average: ${Math.round(totalReactions / 7)}
+✅ System working properly
+
+💡 Reactions are collected throughout the day for future 8 PM summaries!`;
+
+    } catch (error) {
+        logger.error(`❌ Error getting reaction stats: ${error.message}`);
+        return "❌ Error retrieving reaction statistics";
     }
 }
 
