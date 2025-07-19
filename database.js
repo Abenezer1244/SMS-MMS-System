@@ -485,6 +485,75 @@ async getRecentMessages(hoursBack = 24) {
             name: mongoose.connection.name
         };
     }
+
+    // ADD THIS METHOD TO YOUR MongoDBManager CLASS IN database.js
+// Place it at the end of your MongoDBManager class, before the closing bracket
+
+// PRODUCTION HEALTH STATS METHOD
+async getHealthStats() {
+    try {
+        if (!this.isConnected) {
+            return {
+                activeMemberCount: 0,
+                recentMessages24h: 0,
+                processedMediaCount: 0,
+                error: 'Database not connected'
+            };
+        }
+
+        // Get active member count
+        const activeMemberCount = await Member.countDocuments({ active: true });
+
+        // Get recent messages count (last 24 hours)
+        const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const recentMessages24h = await BroadcastMessage.countDocuments({
+            sentAt: { $gte: twentyFourHoursAgo }
+        });
+
+        // Get processed media count
+        const processedMediaCount = await MediaFile.countDocuments({
+            uploadStatus: 'completed'
+        });
+
+        // Get total reactions (if reaction system is implemented)
+        let totalReactions = 0;
+        try {
+            // This will work if you've implemented the reaction system
+            const MessageReaction = require('./models').MessageReaction;
+            if (MessageReaction) {
+                totalReactions = await MessageReaction.countDocuments({});
+            }
+        } catch (reactionError) {
+            // Reaction system not implemented yet - ignore
+        }
+
+        const stats = {
+            activeMemberCount,
+            recentMessages24h,
+            processedMediaCount,
+            totalReactions,
+            databaseStatus: 'connected',
+            lastUpdated: new Date()
+        };
+
+        this.logger.info(`📊 Health stats generated: ${activeMemberCount} members, ${recentMessages24h} recent messages`);
+        
+        return stats;
+
+    } catch (error) {
+        this.logger.error(`❌ Error generating health stats: ${error.message}`);
+        
+        return {
+            activeMemberCount: 0,
+            recentMessages24h: 0,
+            processedMediaCount: 0,
+            totalReactions: 0,
+            databaseStatus: 'error',
+            error: error.message,
+            lastUpdated: new Date()
+        };
+    }
+}
 }
 
 module.exports = MongoDBManager;
