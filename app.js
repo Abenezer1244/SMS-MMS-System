@@ -1659,6 +1659,9 @@ async generateCommandsOnly(member) {
 🔑 ADMIN +phone Name - Grant admin
 🔑 DEMOTE +phone Name - Remove admin
 🔑 CLEANUP STATUS - Database health
+🔑 REACTION STATUS
+🔑 REACTION SEND
+🔑 REACTION STATS
 🔑 WIPE CONFIRM - Emergency reset`;
     }
 
